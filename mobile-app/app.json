@@ -11,7 +11,7 @@
     "android": {
       "package": "com.sunny.paycheckbuddy",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
+        "foregroundImage": "/workspaces/paycheck-buddy/mobile-app/assets/icons/icon.png",
         "backgroundColor": "#070A10"
       }
     },
