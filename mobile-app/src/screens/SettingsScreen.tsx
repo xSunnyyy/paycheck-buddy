@@ -91,7 +91,7 @@ export default function SettingsScreen() {
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
   const [cardDueText, setCardDueText] = useState<Record<string, string>>({});
 
-  // ✅ NEW: editable balance buffer for cards (lets user delete/retype fully)
+  // ✅ editable balance buffer for cards
   const [cardBalanceText, setCardBalanceText] = useState<Record<string, string>>({});
 
   // Calendar picker open card id
@@ -109,17 +109,18 @@ export default function SettingsScreen() {
     setCardDueText(nextCardMap);
 
     const nextBalMap: Record<string, string> = {};
-    for (const c of settings.creditCards || []) nextBalMap[c.id] = String((c as any).balance ?? "");
+    for (const c of settings.creditCards || []) nextBalMap[c.id] = String(c.balance ?? "");
     setCardBalanceText(nextBalMap);
   }, [settings]);
 
+  // ✅ the version that fixes Android (keyboard appears slightly after focus)
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       const node = findNodeHandle(inputRef.current);
       const responder: any = scrollRef.current?.getScrollResponder?.();
       if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
-      responder.scrollResponderScrollNativeHandleToKeyboard(node, 130, true);
-    });
+      responder.scrollResponderScrollNativeHandleToKeyboard(node, 180, true);
+    }, 60);
   };
 
   const keepDigitsOnly = (s: string) => s.replace(/[^0-9]/g, "");
@@ -223,7 +224,7 @@ export default function SettingsScreen() {
   function updateCard(cardId: string, patch: Partial<CreditCard>) {
     setLocal((s) => ({
       ...s,
-      creditCards: (s.creditCards || []).map((c: any) => (c.id === cardId ? { ...c, ...patch } : c)),
+      creditCards: (s.creditCards || []).map((c) => (c.id === cardId ? { ...c, ...patch } : c)),
     }));
   }
 
@@ -231,10 +232,7 @@ export default function SettingsScreen() {
     const id = `cc_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      creditCards: [
-        ...(s.creditCards || []),
-        { id, name: "", balance: 0, totalDue: 0, minDue: 0, dueDay: 1 } as any,
-      ],
+      creditCards: [...(s.creditCards || []), { id, name: "", balance: 0, totalDue: 0, minDue: 0, dueDay: 1 }],
     }));
     setCardDueText((m) => ({ ...m, [id]: "" }));
     setCardBalanceText((m) => ({ ...m, [id]: "" }));
@@ -260,21 +258,19 @@ export default function SettingsScreen() {
   /* ---------------- Save ---------------- */
 
   function save() {
-    // Anchor required for weekly/biweekly
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
       return;
     }
 
-    // Commit due-day buffers
     const monthlyItems: MonthlyItem[] = (local.monthlyItems || []).map((m) => {
       const t = monthlyDueText[m.id] ?? String(m.dueDay ?? "");
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
       return { ...m, dueDay: n };
     });
 
-    const creditCards: CreditCard[] = (local.creditCards || []).map((c: any) => {
+    const creditCards: CreditCard[] = (local.creditCards || []).map((c) => {
       const t = cardDueText[c.id] ?? String(c.dueDay ?? "");
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
 
@@ -286,7 +282,6 @@ export default function SettingsScreen() {
 
     const nextLocal: Settings = { ...local, monthlyItems, creditCards };
 
-    // Validate core fields
     if (nextLocal.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
     if (nextLocal.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
     if (nextLocal.twiceMonthlyDay1 < 1 || nextLocal.twiceMonthlyDay1 > 28)
@@ -299,14 +294,10 @@ export default function SettingsScreen() {
     setSettings(nextLocal);
 
     if (mode === "setup") {
-      // ✅ set flag first
       setHasCompletedSetup(true);
-
-      // ✅ then redirect immediately (no restart required)
       requestAnimationFrame(() => {
         router.replace("/(tabs)/index");
       });
-
       Alert.alert("Saved", "Setup complete. You can now use Dashboard + History.");
     } else {
       Alert.alert("Saved", "Settings saved to device.");
@@ -363,7 +354,7 @@ export default function SettingsScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{
-              paddingBottom: 260 + keyboardHeight,
+              paddingBottom: 420 + keyboardHeight, // ✅ bigger buffer fixes Android
             }}
           >
             <View style={{ gap: 12 }}>
@@ -499,6 +490,7 @@ export default function SettingsScreen() {
                   keyboardType="numeric"
                   placeholder="0"
                   onFocusScrollToInput={scrollToInput}
+                  clearOnFocus
                 />
               </Card>
 
@@ -670,14 +662,14 @@ export default function SettingsScreen() {
               <Card>
                 <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
                 <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Enter each card’s balance (total debt remaining), plus the minimum due + due date. Paid-off cards
-                  (balance 0) will be hidden from the Dashboard.
+                  Enter each card’s balance (debt remaining), minimum due, and due date. Paid-off cards (balance 0) will
+                  be hidden from the Dashboard.
                 </Text>
 
                 <Divider />
 
                 <View style={{ gap: 12 }}>
-                  {(local.creditCards || []).map((c: any) => {
+                  {(local.creditCards || []).map((c) => {
                     const dueText = cardDueText[c.id] ?? "";
                     const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
 
@@ -706,7 +698,7 @@ export default function SettingsScreen() {
                         />
 
                         <Field
-                          label="Balance (total debt remaining)"
+                          label="Balance (debt remaining)"
                           value={balText}
                           onChangeText={(s) => setCardBalanceText((map) => ({ ...map, [c.id]: keepMoneyChars(s) }))}
                           keyboardType="numeric"
@@ -791,7 +783,11 @@ export default function SettingsScreen() {
 
               {/* Actions */}
               <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
+                <TextBtn
+                  label={mode === "setup" ? "Finish setup" : "Save settings"}
+                  onPress={save}
+                  kind="green"
+                />
               </View>
 
               <View style={{ marginTop: 12 }}>

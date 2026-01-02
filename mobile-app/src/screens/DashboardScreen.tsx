@@ -22,7 +22,7 @@ import {
   fmtMoney,
   formatDate,
   displayCategory,
-  CreditCard,
+  type CreditCard,
 } from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
@@ -178,13 +178,11 @@ export default function DashboardScreen() {
     setCycleOffset,
     viewCycle,
     grouped,
+    activeChecked,
     totals,
 
-    // checklist (non-card)
-    activeChecked,
     toggleItem,
 
-    // unexpected
     unexpected,
     unexpectedTotal,
     addUnexpected,
@@ -192,50 +190,43 @@ export default function DashboardScreen() {
 
     personalSpendingTotal,
 
-    // ✅ NEW: credit card + payments
-    activeCreditCards,
-    cardPaymentsTotalThisCycle,
-    getCardPaidThisCycle,
-    isMinimumPaidThisCycle,
-    toggleMinimumPaidForCard,
-    addManualCardPayment,
+    // ✅ manual payments
+    payments,
+    manualPaymentsTotal,
+    addCardPayment,
+    removeCardPayment,
   } = usePayflow();
 
   const keyboardOffset = Math.max(0, insets.top + 24);
 
   const scrollRef = useRef<ScrollView>(null);
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
-    requestAnimationFrame(() => {
+    setTimeout(() => {
       const node = findNodeHandle(inputRef.current);
       const responder: any = scrollRef.current?.getScrollResponder?.();
       if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
-      responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
-    });
+      responder.scrollResponderScrollNativeHandleToKeyboard(node, 130, true);
+    }, 40);
   };
 
-  // Unexpected sheet state
-  const [uxSheetOpen, setUxSheetOpen] = useState(false);
+  // bottom sheet for unexpected
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
 
-  // ✅ Card payment sheet state
-  const [paySheetOpen, setPaySheetOpen] = useState(false);
-  const [pickCardOpen, setPickCardOpen] = useState(false);
+  // ✅ manual payment UI
   const [payCardId, setPayCardId] = useState<string>("");
   const [payAmount, setPayAmount] = useState("");
 
-  const payAmountRef = useRef<TextInput>(null);
+  const payableCards: CreditCard[] = useMemo(
+    () => (settings.creditCards || []).filter((c) => (c.balance || 0) > 0),
+    [settings.creditCards]
+  );
 
-  const selectedCard: CreditCard | undefined = useMemo(() => {
-    if (!payCardId) return undefined;
-    return (settings.creditCards || []).find((c) => c.id === payCardId);
-  }, [settings.creditCards, payCardId]);
-
-  const ensureDefaultPayCard = () => {
-    if (payCardId) return;
-    const first = (activeCreditCards || [])[0];
-    if (first) setPayCardId(first.id);
-  };
+  // default selected card
+  React.useEffect(() => {
+    if (!payCardId && payableCards.length > 0) setPayCardId(payableCards[0].id);
+  }, [payCardId, payableCards]);
 
   if (!loaded) {
     return (
@@ -248,7 +239,6 @@ export default function DashboardScreen() {
     );
   }
 
-  // If setup gate is still required, route user to Settings tab to finish setup.
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -262,7 +252,6 @@ export default function DashboardScreen() {
 
             <Divider />
 
-            {/* keep this only if you want a temporary bypass while developing */}
             <TextBtn
               label="Mark setup complete (dev)"
               kind="green"
@@ -336,10 +325,11 @@ export default function DashboardScreen() {
                 <View style={{ gap: 10 }}>
                   <Row label="Pay amount" value={fmtMoney(settings.payAmount)} />
                   <Row label="Personal spending (per pay)" value={fmtMoney(personalSpendingTotal)} />
-                  <Row label="Debt remaining" value={fmtMoney(settings.debtRemaining)} />
-                  <Row label="Card payments (this cycle)" value={fmtMoney(cardPaymentsTotalThisCycle)} />
+                  <Row label="Debt remaining (other)" value={fmtMoney(settings.debtRemaining)} />
+                  <Row label="Manual card payments (this cycle)" value={fmtMoney(manualPaymentsTotal)} />
                   <Row label="Unexpected (this cycle)" value={fmtMoney(unexpectedTotal)} />
-                  <Row label="Planned (checklist)" value={fmtMoney(totals.planned)} />
+                  <Row label="Planned" value={fmtMoney(totals.planned)} />
+                  <Row label="Completed" value={fmtMoney(totals.done)} />
 
                   <Text style={{ color: COLORS.muted, ...TYPE.body }}>
                     Progress:{" "}
@@ -351,97 +341,125 @@ export default function DashboardScreen() {
               </Card>
             </View>
 
+            {/* ✅ Manual Credit Card Payment */}
+            <View style={{ marginTop: 12 }}>
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Add any extra payment you made. It reduces your paycheck remainder and lowers the card balance.
+                </Text>
+
+                <Divider />
+
+                {payableCards.length === 0 ? (
+                  <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                    No active card balances. Paid-off cards are hidden automatically.
+                  </Text>
+                ) : (
+                  <>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
+
+                    <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                      {payableCards.map((c) => (
+                        <Pressable
+                          key={c.id}
+                          onPress={() => setPayCardId(c.id)}
+                          style={{
+                            paddingVertical: 8,
+                            paddingHorizontal: 10,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                            backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                          }}
+                        >
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                            {c.name || "Card"} • {fmtMoney(c.balance || 0)}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+
+                    <Field
+                      label="Amount paid"
+                      value={payAmount}
+                      onChangeText={setPayAmount}
+                      keyboardType="numeric"
+                      placeholder="0"
+                      onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
+                    />
+
+                    <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                      <TextBtn
+                        label="Add payment"
+                        kind="green"
+                        disabled={!payCardId || Number(payAmount) <= 0}
+                        onPress={() => {
+                          const ok = addCardPayment(payCardId, payAmount);
+                          if (!ok) return;
+                          setPayAmount("");
+                          Keyboard.dismiss();
+                        }}
+                      />
+                      <TextBtn label="Clear" onPress={() => setPayAmount("")} />
+                    </View>
+                  </>
+                )}
+
+                {/* list payments this cycle */}
+                {payments.length > 0 ? (
+                  <>
+                    <Divider />
+                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
+                    <View style={{ marginTop: 10, gap: 10 }}>
+                      {payments.map((p) => {
+                        const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
+                        return (
+                          <View
+                            key={p.id}
+                            style={{
+                              padding: 12,
+                              borderRadius: 16,
+                              borderWidth: 1,
+                              borderColor: "rgba(255,255,255,0.09)",
+                              backgroundColor: "rgba(255,255,255,0.03)",
+                            }}
+                          >
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                  {card?.name || "Credit Card"}
+                                </Text>
+                                <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                  {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
+                                </Text>
+                              </View>
+                              <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                <Chip>{fmtMoney(p.amount)}</Chip>
+                                <TextBtn
+                                  label="Remove"
+                                  kind="red"
+                                  onPress={() => removeCardPayment(viewCycle.id, p.id)}
+                                />
+                              </View>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  </>
+                ) : null}
+              </Card>
+            </View>
+
             {/* Checklist */}
             <View style={{ marginTop: 12, gap: 12 }}>
               {grouped.map(([cat, catItems]) => {
                 const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
+
                 const label = displayCategory(cat as any);
 
-                // ✅ CUSTOM CREDIT CARD RENDER
-                if (cat === "Credit Cards") {
-                  return (
-                    <Card key={String(cat)}>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
-                        <Chip>{fmtMoney(plannedForCat)} min due</Chip>
-                      </View>
-
-                      <Divider />
-
-                      {activeCreditCards.length === 0 ? (
-                        <>
-                          <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                            No active cards. Paid-off cards are hidden from the dashboard.
-                          </Text>
-
-                          <Divider />
-
-                          <TextBtn
-                            label="Add a payment"
-                            onPress={() => {
-                              // no active cards, so nothing to pay
-                            }}
-                            disabled
-                          />
-                        </>
-                      ) : (
-                        <>
-                          {/* Card list */}
-                          <View style={{ gap: 10 }}>
-                            {activeCreditCards.map((c) => {
-                              const minPaid = isMinimumPaidThisCycle(c.id);
-                              const paidThisCycle = getCardPaidThisCycle(c.id);
-                              const subtitle = [
-                                `Balance ${fmtMoney(c.balance || 0)}`,
-                                `Min ${fmtMoney(c.minDue || 0)}`,
-                                `Due day ${c.dueDay || 1}`,
-                                (c.totalDue || 0) > 0 ? `Total due ${fmtMoney(c.totalDue || 0)}` : "",
-                                paidThisCycle > 0 ? `Paid this cycle ${fmtMoney(paidThisCycle)}` : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" • ");
-
-                              return (
-                                <ListRow
-                                  key={c.id}
-                                  title={`${c.name || "Credit Card"} (minimum)`}
-                                  subtitle={subtitle}
-                                  amount={fmtMoney(c.minDue || 0)}
-                                  checked={minPaid}
-                                  onPress={() => toggleMinimumPaidForCard(c.id)}
-                                />
-                              );
-                            })}
-                          </View>
-
-                          <Divider />
-
-                          {/* Add Payment */}
-                          <View style={{ gap: 10 }}>
-                            <Text style={{ color: COLORS.muted, fontWeight: "800" }}>
-                              Add a payment (manual)
-                            </Text>
-                            <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                              Choose a card + enter the amount you paid. This reduces the card balance and counts against this paycheck.
-                            </Text>
-
-                            <TextBtn
-                              label="Add a payment"
-                              kind="green"
-                              onPress={() => {
-                                ensureDefaultPayCard();
-                                setPaySheetOpen(true);
-                                Keyboard.dismiss();
-                              }}
-                            />
-                          </View>
-                        </>
-                      )}
-                    </Card>
-                  );
-                }
-
-                // Default render for non-card categories
                 return (
                   <Card key={String(cat)}>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -490,7 +508,7 @@ export default function DashboardScreen() {
                       Total: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
                     </Text>
                   </View>
-                  <TextBtn label="Add" kind="green" onPress={() => setUxSheetOpen(true)} />
+                  <TextBtn label="Add" kind="green" onPress={() => setSheetOpen(true)} />
                 </View>
 
                 {unexpected.length > 0 ? (
@@ -544,129 +562,11 @@ export default function DashboardScreen() {
             </Text>
           </ScrollView>
 
-          {/* ✅ Add payment bottom sheet */}
-          <BottomSheet
-            visible={paySheetOpen}
-            onClose={() => {
-              setPaySheetOpen(false);
-              Keyboard.dismiss();
-            }}
-            title="Add credit card payment"
-            bottomInset={insets.bottom}
-            keyboardHeight={keyboardHeight}
-            keyboardOffset={keyboardOffset}
-          >
-            <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-              Select a card and enter what you paid. This will reduce your card balance immediately.
-            </Text>
-
-            <Pressable
-              onPress={() => setPickCardOpen(true)}
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 16,
-                borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.09)",
-                backgroundColor: "rgba(255,255,255,0.03)",
-              }}
-            >
-              <Text style={{ color: COLORS.muted, fontWeight: "800", fontSize: 12 }}>Card</Text>
-              <Text style={{ color: COLORS.textStrong, fontWeight: "900", marginTop: 6 }}>
-                {selectedCard?.name || (activeCreditCards[0]?.name ?? "Select a card")}
-              </Text>
-              {selectedCard ? (
-                <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
-                  Balance {fmtMoney(selectedCard.balance || 0)} • Min {fmtMoney(selectedCard.minDue || 0)} • Due day{" "}
-                  {selectedCard.dueDay || 1}
-                </Text>
-              ) : null}
-            </Pressable>
-
-            <Field
-              label="Amount"
-              value={payAmount}
-              onChangeText={setPayAmount}
-              keyboardType="numeric"
-              placeholder="0"
-              onFocusScrollToInput={scrollToInput}
-              clearOnFocus
-            />
-
-            <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-              <TextBtn
-                label="Add payment"
-                kind="green"
-                disabled={!payCardId || Number(payAmount) <= 0}
-                onPress={() => {
-                  const cardId = payCardId || activeCreditCards[0]?.id;
-                  if (!cardId) return;
-
-                  const ok = addManualCardPayment(cardId, payAmount);
-                  if (!ok) return;
-
-                  setPayAmount("");
-                  Keyboard.dismiss();
-                  setPaySheetOpen(false);
-                }}
-              />
-              <TextBtn label="Cancel" onPress={() => setPaySheetOpen(false)} />
-            </View>
-          </BottomSheet>
-
-          {/* ✅ Card picker sheet (dropdown) */}
-          <BottomSheet
-            visible={pickCardOpen}
-            onClose={() => setPickCardOpen(false)}
-            title="Select card"
-            bottomInset={insets.bottom}
-            keyboardHeight={keyboardHeight}
-            keyboardOffset={keyboardOffset}
-          >
-            <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-              Only active (balance &gt; 0) cards are shown.
-            </Text>
-
-            <Divider />
-
-            <View style={{ gap: 10 }}>
-              {activeCreditCards.map((c) => {
-                const selected = c.id === (payCardId || activeCreditCards[0]?.id);
-                return (
-                  <Pressable
-                    key={c.id}
-                    onPress={() => {
-                      setPayCardId(c.id);
-                      setPickCardOpen(false);
-                      // focus amount after selecting
-                      requestAnimationFrame(() => {
-                        payAmountRef.current?.focus?.();
-                      });
-                    }}
-                    style={{
-                      paddingVertical: 12,
-                      paddingHorizontal: 12,
-                      borderRadius: 16,
-                      borderWidth: 1,
-                      borderColor: selected ? "rgba(34,197,94,0.55)" : "rgba(255,255,255,0.09)",
-                      backgroundColor: selected ? "rgba(34,197,94,0.10)" : "rgba(255,255,255,0.03)",
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{c.name || "Credit Card"}</Text>
-                    <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 4 }}>
-                      Balance {fmtMoney(c.balance || 0)} • Min {fmtMoney(c.minDue || 0)} • Due day {c.dueDay || 1}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </BottomSheet>
-
           {/* Add unexpected bottom sheet */}
           <BottomSheet
-            visible={uxSheetOpen}
+            visible={sheetOpen}
             onClose={() => {
-              setUxSheetOpen(false);
+              setSheetOpen(false);
               Keyboard.dismiss();
             }}
             title="Add unexpected expense"
@@ -707,10 +607,10 @@ export default function DashboardScreen() {
                   setUxLabel("");
                   setUxAmount("");
                   Keyboard.dismiss();
-                  setUxSheetOpen(false);
+                  setSheetOpen(false);
                 }}
               />
-              <TextBtn label="Cancel" onPress={() => setUxSheetOpen(false)} />
+              <TextBtn label="Cancel" onPress={() => setSheetOpen(false)} />
             </View>
           </BottomSheet>
         </View>
