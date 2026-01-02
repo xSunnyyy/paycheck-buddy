@@ -130,6 +130,11 @@ export function Field({
   onFocusScrollToInput,
   borderColorOverride,
   clearOnFocus = false,
+
+  // ✅ NEW optional niceties
+  multiline = false,
+  numberOfLines,
+  autoCapitalize = "none",
 }: {
   label: string;
   value: string;
@@ -139,8 +144,18 @@ export function Field({
   onFocusScrollToInput?: (inputRef: React.RefObject<TextInput>) => void;
   borderColorOverride?: string;
   clearOnFocus?: boolean;
+
+  multiline?: boolean;
+  numberOfLines?: number;
+  autoCapitalize?: "none" | "sentences" | "words" | "characters";
 }) {
   const inputRef = useRef<TextInput>(null);
+
+  // ✅ Better numeric keyboard:
+  // - iOS "numeric" doesn’t include decimals; "decimal-pad" does.
+  // - Android "numeric" is fine for most cases.
+  const nativeKeyboardType: any =
+    keyboardType === "numeric" && Platform.OS === "ios" ? "decimal-pad" : keyboardType;
 
   return (
     <View style={{ marginTop: 10 }}>
@@ -149,13 +164,17 @@ export function Field({
         ref={inputRef}
         value={value}
         onChangeText={onChangeText}
-        keyboardType={keyboardType}
+        keyboardType={nativeKeyboardType}
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
         onFocus={() => {
           if (clearOnFocus) onChangeText("");
           onFocusScrollToInput?.(inputRef);
         }}
+        autoCorrect={false}
+        autoCapitalize={autoCapitalize}
+        multiline={multiline}
+        numberOfLines={numberOfLines}
         style={{
           marginTop: 6,
           borderWidth: 1,
@@ -166,6 +185,7 @@ export function Field({
           color: COLORS.textStrong,
           backgroundColor: "rgba(255,255,255,0.05)",
           fontWeight: "800",
+          ...(multiline ? { minHeight: 44, textAlignVertical: "top" as const } : null),
         }}
       />
     </View>

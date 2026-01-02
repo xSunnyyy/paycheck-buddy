@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +15,8 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+
+import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
 import {
   usePayflow,
@@ -64,6 +67,8 @@ type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const keyboardHeight = useKeyboardHeight();
+  const keyboardOffset = Math.max(0, insets.top + 24);
 
   const {
     loaded,
@@ -86,6 +91,9 @@ export default function SettingsScreen() {
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
   const [cardDueText, setCardDueText] = useState<Record<string, string>>({});
 
+  // ✅ NEW: editable balance buffer for cards (lets user delete/retype fully)
+  const [cardBalanceText, setCardBalanceText] = useState<Record<string, string>>({});
+
   // Calendar picker open card id
   const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
 
@@ -99,6 +107,10 @@ export default function SettingsScreen() {
     const nextCardMap: Record<string, string> = {};
     for (const c of settings.creditCards || []) nextCardMap[c.id] = String(c.dueDay ?? "");
     setCardDueText(nextCardMap);
+
+    const nextBalMap: Record<string, string> = {};
+    for (const c of settings.creditCards || []) nextBalMap[c.id] = String((c as any).balance ?? "");
+    setCardBalanceText(nextBalMap);
   }, [settings]);
 
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
@@ -106,11 +118,12 @@ export default function SettingsScreen() {
       const node = findNodeHandle(inputRef.current);
       const responder: any = scrollRef.current?.getScrollResponder?.();
       if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
-      responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
+      responder.scrollResponderScrollNativeHandleToKeyboard(node, 130, true);
     });
   };
 
   const keepDigitsOnly = (s: string) => s.replace(/[^0-9]/g, "");
+  const keepMoneyChars = (s: string) => s.replace(/[^0-9.]/g, "");
 
   const shouldShowAnchor = local.payFrequency === "weekly" || local.payFrequency === "biweekly";
   const anchorSelected = hasValidAnchorDate(local.anchorISO);
@@ -210,7 +223,7 @@ export default function SettingsScreen() {
   function updateCard(cardId: string, patch: Partial<CreditCard>) {
     setLocal((s) => ({
       ...s,
-      creditCards: (s.creditCards || []).map((c) => (c.id === cardId ? { ...c, ...patch } : c)),
+      creditCards: (s.creditCards || []).map((c: any) => (c.id === cardId ? { ...c, ...patch } : c)),
     }));
   }
 
@@ -218,9 +231,13 @@ export default function SettingsScreen() {
     const id = `cc_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      creditCards: [...(s.creditCards || []), { id, name: "", totalDue: 0, minDue: 0, dueDay: 1 }],
+      creditCards: [
+        ...(s.creditCards || []),
+        { id, name: "", balance: 0, totalDue: 0, minDue: 0, dueDay: 1 } as any,
+      ],
     }));
     setCardDueText((m) => ({ ...m, [id]: "" }));
+    setCardBalanceText((m) => ({ ...m, [id]: "" }));
   }
 
   function removeCard(id: string) {
@@ -229,6 +246,11 @@ export default function SettingsScreen() {
       creditCards: (s.creditCards || []).filter((c) => c.id !== id),
     }));
     setCardDueText((m) => {
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+    setCardBalanceText((m) => {
       const next = { ...m };
       delete next[id];
       return next;
@@ -252,10 +274,14 @@ export default function SettingsScreen() {
       return { ...m, dueDay: n };
     });
 
-    const creditCards: CreditCard[] = (local.creditCards || []).map((c) => {
+    const creditCards: CreditCard[] = (local.creditCards || []).map((c: any) => {
       const t = cardDueText[c.id] ?? String(c.dueDay ?? "");
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
-      return { ...c, dueDay: n };
+
+      const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
+      const bal = Math.max(0, safeParseNumber(keepMoneyChars(balText)));
+
+      return { ...c, dueDay: n, balance: bal };
     });
 
     const nextLocal: Settings = { ...local, monthlyItems, creditCards };
@@ -317,338 +343,178 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-      <View
-        style={{
-          flex: 1,
-          paddingHorizontal: 16,
-          paddingTop: 10,
-          paddingBottom: 14 + insets.bottom,
-          backgroundColor: COLORS.bg,
-        }}
+
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={keyboardOffset}
       >
-        <ScrollView
-          ref={scrollRef}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 280 }}
+        <View
+          style={{
+            flex: 1,
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            paddingBottom: 14 + insets.bottom,
+            backgroundColor: COLORS.bg,
+          }}
         >
-          <<View style={{ gap: 12 }}>
-            {/* Pay schedule */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
-                {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
-              </Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Choose one of the 4 options.
-              </Text>
+          <ScrollView
+            ref={scrollRef}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{
+              paddingBottom: 260 + keyboardHeight,
+            }}
+          >
+            <View style={{ gap: 12 }}>
+              {/* Pay schedule */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
+                  {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
+                </Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Choose one of the 4 options.
+                </Text>
 
-              <Divider />
+                <Divider />
 
-              <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
-                  <TextBtn
-                    key={f}
-                    label={freqLabel(f)}
-                    onPress={() => setFreq(f)}
-                    kind={local.payFrequency === f ? "green" : "default"}
-                  />
-                ))}
-              </View>
-
-              <Field
-                label="Pay amount (per pay event)"
-                value={String(local.payAmount)}
-                onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
-                keyboardType="numeric"
-                placeholder="0"
-                onFocusScrollToInput={scrollToInput}
-              />
-
-              {shouldShowAnchor ? (
-                <>
-                  <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Payday</Text>
-
-                  <Pressable
-                    onPress={() => setShowAnchorPicker(true)}
-                    style={{
-                      marginTop: 6,
-                      borderWidth: 1,
-                      borderColor: anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
-                      borderRadius: 14,
-                      paddingVertical: 12,
-                      paddingHorizontal: 12,
-                      backgroundColor: "rgba(255,255,255,0.05)",
-                    }}
-                  >
-                    <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
-                      {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
-                    </Text>
-                    <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                      Tap to pick a date
-                    </Text>
-                  </Pressable>
-
-                  {showAnchorPicker ? (
-                    <DateTimePicker
-                      value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
-                      mode="date"
-                      display={Platform.OS === "ios" ? "spinner" : "default"}
-                      onChange={(event, selectedDate) => {
-                        if (Platform.OS !== "ios") setShowAnchorPicker(false);
-                        if (!selectedDate) return;
-                        setAnchorError(false);
-                        setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
-                      }}
+                <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                  {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
+                    <TextBtn
+                      key={f}
+                      label={freqLabel(f)}
+                      onPress={() => setFreq(f)}
+                      kind={local.payFrequency === f ? "green" : "default"}
                     />
-                  ) : null}
+                  ))}
+                </View>
 
-                  {Platform.OS === "ios" && showAnchorPicker ? (
-                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
-                    </View>
-                  ) : null}
-                </>
-              ) : null}
+                <Field
+                  label="Pay amount (per pay event)"
+                  value={String(local.payAmount)}
+                  onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  onFocusScrollToInput={scrollToInput}
+                />
 
-              {local.payFrequency === "twice_monthly" ? (
-                <>
+                {shouldShowAnchor ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Payday</Text>
+
+                    <Pressable
+                      onPress={() => setShowAnchorPicker(true)}
+                      style={{
+                        marginTop: 6,
+                        borderWidth: 1,
+                        borderColor: anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
+                        borderRadius: 14,
+                        paddingVertical: 12,
+                        paddingHorizontal: 12,
+                        backgroundColor: "rgba(255,255,255,0.05)",
+                      }}
+                    >
+                      <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
+                        {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
+                      </Text>
+                      <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                        Tap to pick a date
+                      </Text>
+                    </Pressable>
+
+                    {showAnchorPicker ? (
+                      <DateTimePicker
+                        value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
+                        mode="date"
+                        display={Platform.OS === "ios" ? "spinner" : "default"}
+                        onChange={(event, selectedDate) => {
+                          if (Platform.OS !== "ios") setShowAnchorPicker(false);
+                          if (!selectedDate) return;
+                          setAnchorError(false);
+                          setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
+                        }}
+                      />
+                    ) : null}
+
+                    {Platform.OS === "ios" && showAnchorPicker ? (
+                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                        <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
+                      </View>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {local.payFrequency === "twice_monthly" ? (
+                  <>
+                    <Field
+                      label="Twice-monthly payday #1 (1–28)"
+                      value={String(local.twiceMonthlyDay1)}
+                      onChangeText={(s) =>
+                        setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
+                      }
+                      keyboardType="numeric"
+                      placeholder="1"
+                      onFocusScrollToInput={scrollToInput}
+                    />
+                    <Field
+                      label="Twice-monthly payday #2 (1–28)"
+                      value={String(local.twiceMonthlyDay2)}
+                      onChangeText={(s) =>
+                        setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
+                      }
+                      keyboardType="numeric"
+                      placeholder="15"
+                      onFocusScrollToInput={scrollToInput}
+                    />
+                  </>
+                ) : null}
+
+                {local.payFrequency === "monthly" ? (
                   <Field
-                    label="Twice-monthly payday #1 (1–28)"
-                    value={String(local.twiceMonthlyDay1)}
+                    label="Monthly payday (1–28)"
+                    value={String(local.monthlyPayDay)}
                     onChangeText={(s) =>
-                      setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
+                      setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
                     }
                     keyboardType="numeric"
                     placeholder="1"
                     onFocusScrollToInput={scrollToInput}
                   />
-                  <Field
-                    label="Twice-monthly payday #2 (1–28)"
-                    value={String(local.twiceMonthlyDay2)}
-                    onChangeText={(s) =>
-                      setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
-                    }
-                    keyboardType="numeric"
-                    placeholder="15"
-                    onFocusScrollToInput={scrollToInput}
-                  />
-                </>
-              ) : null}
+                ) : null}
+              </Card>
 
-              {local.payFrequency === "monthly" ? (
+              {/* Totals */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  One total debt, auto-decreases when you check Debt Paydown.
+                </Text>
+
+                <Divider />
+
                 <Field
-                  label="Monthly payday (1–28)"
-                  value={String(local.monthlyPayDay)}
-                  onChangeText={(s) =>
-                    setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
-                  }
+                  label="Debt remaining"
+                  value={String(local.debtRemaining)}
+                  onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
                   keyboardType="numeric"
-                  placeholder="1"
+                  placeholder="0"
                   onFocusScrollToInput={scrollToInput}
                 />
-              ) : null}
-            </Card>
+              </Card>
 
-            {/* Totals */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                One total debt, auto-decreases when you check Debt Paydown.
-              </Text>
+              {/* Paycheck Distributions */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Items that repeat every pay cycle (e.g., Savings, Investing).
+                </Text>
 
-              <Divider />
+                <Divider />
 
-              <Field
-                label="Debt remaining"
-                value={String(local.debtRemaining)}
-                onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
-                keyboardType="numeric"
-                placeholder="0"
-                onFocusScrollToInput={scrollToInput}
-              />
-            </Card>
-
-            {/* Paycheck Distributions */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Items that repeat every pay cycle (e.g., Savings, Investing).
-              </Text>
-
-              <Divider />
-
-              <View style={{ gap: 12 }}>
-                {(local.allocations || []).map((a) => (
-                  <View
-                    key={a.id}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: COLORS.borderSoft,
-                      borderRadius: 16,
-                      padding: 12,
-                      backgroundColor: "rgba(255,255,255,0.03)",
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
-
-                    <Field
-                      label="Name"
-                      value={a.label}
-                      onChangeText={(s) => updateDistribution(a.id, { label: s })}
-                      placeholder="Savings"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-                    <Field
-                      label="Amount"
-                      value={String(a.amount)}
-                      onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
-                    </View>
-                  </View>
-                ))}
-
-                <TextBtn label="Add distribution" onPress={addDistribution} />
-              </View>
-            </Card>
-
-            {/* Personal Spending */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Personal Spending</Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Personal “fun money” items that repeat every pay cycle.
-              </Text>
-
-              <Divider />
-
-              <View style={{ gap: 12 }}>
-                {(local.personalSpending || []).map((p) => (
-                  <View
-                    key={p.id}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: COLORS.borderSoft,
-                      borderRadius: 16,
-                      padding: 12,
-                      backgroundColor: "rgba(255,255,255,0.03)",
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
-
-                    <Field
-                      label="Name"
-                      value={p.label}
-                      onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
-                      placeholder="Dining out"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-                    <Field
-                      label="Amount"
-                      value={String(p.amount)}
-                      onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
-                    </View>
-                  </View>
-                ))}
-
-                <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
-              </View>
-            </Card>
-
-            {/* Monthly Expenses */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
-              </Text>
-
-              <Divider />
-
-              <View style={{ gap: 12 }}>
-                {(local.monthlyItems || []).map((m) => (
-                  <View
-                    key={m.id}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: COLORS.borderSoft,
-                      borderRadius: 16,
-                      padding: 12,
-                      backgroundColor: "rgba(255,255,255,0.03)",
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
-
-                    <Field
-                      label="Name"
-                      value={m.label}
-                      onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                      placeholder="Electricity"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <Field
-                      label="Amount"
-                      value={String(m.amount)}
-                      onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <Field
-                      label="Due day (1–31)"
-                      value={monthlyDueText[m.id] ?? ""}
-                      onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
-                      keyboardType="numeric"
-                      placeholder="1"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
-                    </View>
-                  </View>
-                ))}
-
-                <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
-              </View>
-            </Card>
-
-            {/* Credit Cards */}
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
-              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Add each card’s due date + minimum payment. The app assigns it to the correct paycheck (1–15 vs 16–31).
-              </Text>
-
-              <Divider />
-
-              <View style={{ gap: 12 }}>
-                {(local.creditCards || []).map((c) => {
-                  const dueText = cardDueText[c.id] ?? "";
-                  const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
-
-                  return (
+                <View style={{ gap: 12 }}>
+                  {(local.allocations || []).map((a) => (
                     <View
-                      key={c.id}
+                      key={a.id}
                       style={{
                         borderWidth: 1,
                         borderColor: COLORS.borderSoft,
@@ -657,104 +523,288 @@ export default function SettingsScreen() {
                         backgroundColor: "rgba(255,255,255,0.03)",
                       }}
                     >
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
 
                       <Field
                         label="Name"
-                        value={c.name}
-                        onChangeText={(s) => updateCard(c.id, { name: s })}
-                        placeholder="Chase Freedom"
+                        value={a.label}
+                        onChangeText={(s) => updateDistribution(a.id, { label: s })}
+                        placeholder="Savings"
                         onFocusScrollToInput={scrollToInput}
                         clearOnFocus
                       />
-
                       <Field
-                        label="Total Amount Due"
-                        value={String(c.totalDue)}
-                        onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
+                        label="Amount"
+                        value={String(a.amount)}
+                        onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
                         keyboardType="numeric"
                         placeholder="0"
                         onFocusScrollToInput={scrollToInput}
                         clearOnFocus
                       />
-
-                      <Field
-                        label="Minimum Due"
-                        value={String(c.minDue)}
-                        onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
-                      />
-
-                      <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
-
-                      <Pressable
-                        onPress={() => setOpenCardPickerId(c.id)}
-                        style={{
-                          marginTop: 6,
-                          borderWidth: 1,
-                          borderColor: COLORS.border,
-                          borderRadius: 14,
-                          paddingVertical: 12,
-                          paddingHorizontal: 12,
-                          backgroundColor: "rgba(255,255,255,0.05)",
-                        }}
-                      >
-                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
-                        <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                          Tap to pick a date (we only store the day number)
-                        </Text>
-                      </Pressable>
-
-                      {openCardPickerId === c.id ? (
-                        <DateTimePicker
-                          value={new Date()}
-                          mode="date"
-                          display={Platform.OS === "ios" ? "spinner" : "default"}
-                          onChange={(event, selectedDate) => {
-                            if (Platform.OS !== "ios") setOpenCardPickerId(null);
-                            if (!selectedDate) return;
-                            const day = selectedDate.getDate();
-                            setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
-                            updateCard(c.id, { dueDay: day });
-                          }}
-                        />
-                      ) : null}
-
-                      {Platform.OS === "ios" && openCardPickerId === c.id ? (
-                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                          <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
-                        </View>
-                      ) : null}
 
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                        <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
+                        <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
                       </View>
                     </View>
-                  );
-                })}
+                  ))}
 
-                <TextBtn label="Add credit card" onPress={addCard} />
+                  <TextBtn label="Add distribution" onPress={addDistribution} />
+                </View>
+              </Card>
+
+              {/* Personal Spending */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Personal Spending</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Personal “fun money” items that repeat every pay cycle.
+                </Text>
+
+                <Divider />
+
+                <View style={{ gap: 12 }}>
+                  {(local.personalSpending || []).map((p) => (
+                    <View
+                      key={p.id}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: COLORS.borderSoft,
+                        borderRadius: 16,
+                        padding: 12,
+                        backgroundColor: "rgba(255,255,255,0.03)",
+                      }}
+                    >
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
+
+                      <Field
+                        label="Name"
+                        value={p.label}
+                        onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
+                        placeholder="Dining out"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+                      <Field
+                        label="Amount"
+                        value={String(p.amount)}
+                        onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
+                        keyboardType="numeric"
+                        placeholder="0"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+
+                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                        <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
+                      </View>
+                    </View>
+                  ))}
+
+                  <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
+                </View>
+              </Card>
+
+              {/* Monthly Expenses */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
+                </Text>
+
+                <Divider />
+
+                <View style={{ gap: 12 }}>
+                  {(local.monthlyItems || []).map((m) => (
+                    <View
+                      key={m.id}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: COLORS.borderSoft,
+                        borderRadius: 16,
+                        padding: 12,
+                        backgroundColor: "rgba(255,255,255,0.03)",
+                      }}
+                    >
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
+
+                      <Field
+                        label="Name"
+                        value={m.label}
+                        onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
+                        placeholder="Electricity"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+
+                      <Field
+                        label="Amount"
+                        value={String(m.amount)}
+                        onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
+                        keyboardType="numeric"
+                        placeholder="0"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+
+                      <Field
+                        label="Due day (1–31)"
+                        value={monthlyDueText[m.id] ?? ""}
+                        onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
+                        keyboardType="numeric"
+                        placeholder="1"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+
+                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                        <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
+                      </View>
+                    </View>
+                  ))}
+
+                  <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
+                </View>
+              </Card>
+
+              {/* Credit Cards */}
+              <Card>
+                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Enter each card’s balance (total debt remaining), plus the minimum due + due date. Paid-off cards
+                  (balance 0) will be hidden from the Dashboard.
+                </Text>
+
+                <Divider />
+
+                <View style={{ gap: 12 }}>
+                  {(local.creditCards || []).map((c: any) => {
+                    const dueText = cardDueText[c.id] ?? "";
+                    const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
+
+                    const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
+
+                    return (
+                      <View
+                        key={c.id}
+                        style={{
+                          borderWidth: 1,
+                          borderColor: COLORS.borderSoft,
+                          borderRadius: 16,
+                          padding: 12,
+                          backgroundColor: "rgba(255,255,255,0.03)",
+                        }}
+                      >
+                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
+
+                        <Field
+                          label="Name"
+                          value={c.name}
+                          onChangeText={(s) => updateCard(c.id, { name: s })}
+                          placeholder="Chase Freedom"
+                          onFocusScrollToInput={scrollToInput}
+                          clearOnFocus
+                        />
+
+                        <Field
+                          label="Balance (total debt remaining)"
+                          value={balText}
+                          onChangeText={(s) => setCardBalanceText((map) => ({ ...map, [c.id]: keepMoneyChars(s) }))}
+                          keyboardType="numeric"
+                          placeholder="0"
+                          onFocusScrollToInput={scrollToInput}
+                          clearOnFocus
+                        />
+
+                        <Field
+                          label="Total Amount Due (statement)"
+                          value={String(c.totalDue)}
+                          onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
+                          keyboardType="numeric"
+                          placeholder="0"
+                          onFocusScrollToInput={scrollToInput}
+                          clearOnFocus
+                        />
+
+                        <Field
+                          label="Minimum Due"
+                          value={String(c.minDue)}
+                          onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
+                          keyboardType="numeric"
+                          placeholder="0"
+                          onFocusScrollToInput={scrollToInput}
+                          clearOnFocus
+                        />
+
+                        <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
+
+                        <Pressable
+                          onPress={() => setOpenCardPickerId(c.id)}
+                          style={{
+                            marginTop: 6,
+                            borderWidth: 1,
+                            borderColor: COLORS.border,
+                            borderRadius: 14,
+                            paddingVertical: 12,
+                            paddingHorizontal: 12,
+                            backgroundColor: "rgba(255,255,255,0.05)",
+                          }}
+                        >
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                            Day {dueDay} of the month
+                          </Text>
+                          <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                            Tap to pick a date (we only store the day number)
+                          </Text>
+                        </Pressable>
+
+                        {openCardPickerId === c.id ? (
+                          <DateTimePicker
+                            value={new Date()}
+                            mode="date"
+                            display={Platform.OS === "ios" ? "spinner" : "default"}
+                            onChange={(event, selectedDate) => {
+                              if (Platform.OS !== "ios") setOpenCardPickerId(null);
+                              if (!selectedDate) return;
+                              const day = selectedDate.getDate();
+                              setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
+                              updateCard(c.id, { dueDay: day });
+                            }}
+                          />
+                        ) : null}
+
+                        {Platform.OS === "ios" && openCardPickerId === c.id ? (
+                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                            <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
+                          </View>
+                        ) : null}
+
+                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                          <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
+                        </View>
+                      </View>
+                    );
+                  })}
+
+                  <TextBtn label="Add credit card" onPress={addCard} />
+                </View>
+              </Card>
+
+              {/* Actions */}
+              <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
               </View>
-            </Card>
 
-            {/* Actions */}
-            <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-              <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
+              <View style={{ marginTop: 12 }}>
+                <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
+              </View>
+
+              <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
+                Offline • Saved on-device
+              </Text>
             </View>
-
-            <View style={{ marginTop: 12 }}>
-              <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
-            </View>
-
-            <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
-              Offline • Saved on-device
-            </Text>
-          </View>
-        </ScrollView>
-      </View>
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

@@ -7,13 +7,37 @@ type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
 // ✅ Bills -> Credit Cards
 type Category = "Credit Cards" | "Monthly" | "Allocations" | "Personal" | "Debt";
 
-// ✅ NEW
+/**
+ * ✅ Credit Cards
+ * - balance: total debt remaining (THIS is what gets reduced by payments)
+ * - totalDue: statement amount due this month (informational)
+ * - minDue: minimum payment required
+ * - dueDay: day of month
+ */
 export type CreditCard = {
   id: string;
   name: string;
-  totalDue: number; // statement balance due this month (informational)
-  minDue: number; // minimum payment required
-  dueDay: number; // 1–31 (day of month)
+
+  balance: number; // ✅ total debt remaining (reduced by payments)
+  totalDue: number; // statement due this month (informational)
+  minDue: number; // minimum required
+  dueDay: number; // 1–31
+};
+
+/**
+ * ✅ Card payments ledger (per-cycle)
+ * - Used to:
+ *   - prevent double-counting minimum checkbox
+ *   - compute “paid this cycle” totals
+ *   - support manual “Add Payment” flow
+ */
+export type CardPayment = {
+  id: string;
+  cycleId: string;
+  cardId: string;
+  amount: number;
+  kind: "minimum" | "manual";
+  atISO: string;
 };
 
 export type Allocation = { id: string; label: string; amount: number };
@@ -38,6 +62,7 @@ export type Settings = {
   personalSpending: PersonalSpendingItem[];
 
   // total debt you’re tracking (cards + other), reduced when payments are applied
+  // NOTE: With the new card-balance model, you can treat this as “other debt” if you want.
   debtRemaining: number;
 };
 
@@ -62,10 +87,15 @@ type Persisted = {
   hasCompletedSetup: boolean;
   settings: any;
   checkedByCycle: Record<string, CheckedState>;
+
   // once-per-cycle apply guard for debtRemaining reduction
   appliedDebtCycles: Record<string, boolean>;
+
   activeCycleId?: string;
   unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
+
+  // ✅ NEW: per-cycle credit card payments ledger
+  cardPaymentsByCycle?: Record<string, CardPayment[]>;
 };
 
 // NOTE: Keep the same storage key so we can migrate old data safely
@@ -105,6 +135,7 @@ export async function setSetupCompleteForPayflow(done: boolean): Promise<void> {
       appliedDebtCycles: parsed?.appliedDebtCycles ?? {},
       activeCycleId: parsed?.activeCycleId,
       unexpectedByCycle: parsed?.unexpectedByCycle ?? {},
+      cardPaymentsByCycle: parsed?.cardPaymentsByCycle ?? {},
     };
 
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -313,45 +344,11 @@ export const getLastNCycles = (settings: Settings, now: Date, n: number) => {
 };
 
 /**
- * ✅ Payoff / Minimum Due logic
- *
- * For each cycle:
- * 1) Include minimum payments for cards whose due date falls within the cycle.
- * 2) Compute remainder = payAmount - (mins + monthly + allocations + personal + unexpected).
- * 3) If remainder > 0, create ONE extra-payoff item to the “best” target card to pay down fastest:
- *    - Heuristic (no APR available): pick the card with the largest (totalDue - minDue) due this cycle,
- *      otherwise the card with the largest totalDue overall.
- * 4) Debt Paydown item becomes informational/backup; we keep it to preserve your “auto-decrease once/cycle” behavior.
+ * ✅ Checklist logic (updated)
+ * - Only includes CREDIT CARD MINIMUMS due in this cycle
+ * - No auto “extra payment” item (you want manual payments via dropdown)
+ * - Cards with balance <= 0 are excluded everywhere (they should not show on dashboard)
  */
-function choosePayoffTargetCard(
-  settings: Settings,
-  dueThisCycle: CreditCard[]
-): CreditCard | null {
-  const all = settings.creditCards || [];
-  if (all.length === 0) return null;
-
-  const candidates = dueThisCycle.length > 0 ? dueThisCycle : all;
-
-  // Prefer highest remaining after minimum (a simple “pay down fastest” proxy)
-  let best = candidates[0];
-  let bestScore = Math.max(0, (best.totalDue || 0) - (best.minDue || 0));
-
-  for (const c of candidates) {
-    const score = Math.max(0, (c.totalDue || 0) - (c.minDue || 0));
-    if (score > bestScore) {
-      best = c;
-      bestScore = score;
-    }
-  }
-
-  // If everything tied at 0, fall back to highest totalDue
-  if (bestScore <= 0) {
-    best = candidates.reduce((acc, cur) => ((cur.totalDue || 0) > (acc.totalDue || 0) ? cur : acc), candidates[0]);
-  }
-
-  return best ?? null;
-}
-
 export const buildChecklistForCycle = (
   settings: Settings,
   cycle: Cycle,
@@ -359,9 +356,11 @@ export const buildChecklistForCycle = (
 ): ChecklistItem[] => {
   const items: ChecklistItem[] = [];
 
-  // 1) CREDIT CARD minimums due in this cycle
-  const cardsDueThisCycle: CreditCard[] = [];
+  // 1) CREDIT CARD minimums due in this cycle (ONLY for active cards with balance > 0)
   for (const card of settings.creditCards || []) {
+    const bal = Number(card.balance ?? 0) || 0;
+    if (bal <= 0) continue; // ✅ hide “paid off” cards entirely
+
     const dueA = dueDateForMonth(card.dueDay || 1, cycle.start);
     const dueB = dueDateForMonth(card.dueDay || 1, cycle.end);
 
@@ -369,15 +368,15 @@ export const buildChecklistForCycle = (
       isBetweenInclusive(dueA, cycle.start, cycle.end) ||
       isBetweenInclusive(dueB, cycle.start, cycle.end);
 
-    if (inThisCycle) cardsDueThisCycle.push(card);
-
     if (inThisCycle && (card.minDue || 0) > 0) {
       items.push({
         id: `cc_min_${card.id}`,
         label: `Pay ${card.name || "Credit Card"} (minimum)`,
         amount: card.minDue || 0,
         category: "Credit Cards",
-        notes: `Total due ${fmtMoney(card.totalDue || 0)} • Due day ${card.dueDay || 1}`,
+        notes: `Balance ${fmtMoney(bal)} • Total due ${fmtMoney(card.totalDue || 0)} • Due day ${
+          card.dueDay || 1
+        }`,
       });
     }
   }
@@ -430,36 +429,17 @@ export const buildChecklistForCycle = (
     }
   }
 
-  // 5) Compute remainder AFTER minimums + monthly + allocations + personal + unexpected
+  // 5) Debt Paydown item (kept for backwards-compat behavior / optional “other debt”)
+  //    This is still “remainder after planned + unexpected”, but it is NOT tied to cards.
   const plannedNonDebt = items.reduce((sum, i) => sum + (i.amount || 0), 0);
   const remainder = Math.max(0, (settings.payAmount || 0) - plannedNonDebt - (unexpectedTotal || 0));
 
-  // 6) Add ONE “extra payoff” item if remainder > 0 and there is at least one card
-  const payoffTarget = remainder > 0 ? choosePayoffTargetCard(settings, cardsDueThisCycle) : null;
-  if (payoffTarget && remainder > 0) {
-    items.push({
-      id: `cc_extra_${payoffTarget.id}`,
-      label: `Extra payment to ${payoffTarget.name || "Credit Card"}`,
-      amount: remainder,
-      category: "Credit Cards",
-      notes:
-        cardsDueThisCycle.length > 0
-          ? "Uses leftover after minimums to pay down fastest"
-          : "Uses leftover after planned items to pay down fastest",
-    });
-  }
-
-  // 7) Keep Debt Paydown item (for your existing “auto-decrease once per cycle” behavior)
-  //    We set this to the SAME remainder amount, so your existing auto-apply can continue
-  //    even if you don’t check the extra item.
   items.push({
     id: "debt_paydown",
     label: "Debt Paydown",
     amount: remainder,
     category: "Debt",
-    notes: payoffTarget
-      ? `Leftover after planned + unexpected. Suggested target: ${payoffTarget.name || "Credit Card"}`
-      : "Leftover after planned + unexpected",
+    notes: "Leftover after planned + unexpected (not tied to cards; manual card payments are separate)",
   });
 
   return items;
@@ -491,14 +471,17 @@ function migrateSettings(raw: any): Settings {
 
   if (!hasCardsAlready && hasOldBills) {
     const oldBills: Bill[] = s.bills;
-    s.creditCards = oldBills.map((b: any) => ({
-      id: String(b.id ?? `cc_${Date.now()}`),
-      name: String(b.name ?? ""),
-      totalDue: Number(b.amount ?? 0) || 0,
-      // old bills only had one amount, so set minDue = amount as a safe starting point
-      minDue: Number(b.amount ?? 0) || 0,
-      dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
-    }));
+    s.creditCards = oldBills.map((b: any) => {
+      const amt = Number(b.amount ?? 0) || 0;
+      return {
+        id: String(b.id ?? `cc_${Date.now()}`),
+        name: String(b.name ?? ""),
+        balance: amt, // ✅ best we can do from old model
+        totalDue: amt,
+        minDue: amt,
+        dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
+      };
+    });
   }
 
   // Normalize monthly items
@@ -510,9 +493,11 @@ function migrateSettings(raw: any): Settings {
   }));
 
   // Normalize credit cards
+  // ✅ NEW: add balance (defaults to totalDue if missing)
   s.creditCards = (s.creditCards || []).map((c: any) => ({
     id: String(c.id ?? `cc_${Date.now()}`),
     name: String(c.name ?? ""),
+    balance: Number(c.balance ?? c.totalDue ?? 0) || 0,
     totalDue: Number(c.totalDue ?? 0) || 0,
     minDue: Number(c.minDue ?? 0) || 0,
     dueDay: clamp(Number(c.dueDay ?? 1) || 1, 1, 31),
@@ -552,6 +537,10 @@ export function usePayflow() {
   const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
   const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
   const [unexpectedByCycle, setUnexpectedByCycle] = useState<Record<string, UnexpectedExpense[]>>({});
+
+  // ✅ NEW: credit card payments ledger (per cycle)
+  const [cardPaymentsByCycle, setCardPaymentsByCycle] = useState<Record<string, CardPayment[]>>({});
+
   const [cycleOffset, setCycleOffset] = useState(0);
 
   const nowRef = useRef(new Date());
@@ -581,6 +570,182 @@ export function usePayflow() {
     [settings.personalSpending]
   );
 
+  // ✅ Payments (this cycle)
+  const cardPaymentsThisCycle = useMemo(
+    () => cardPaymentsByCycle[viewCycle.id] ?? [],
+    [cardPaymentsByCycle, viewCycle.id]
+  );
+
+  const cardPaymentsTotalThisCycle = useMemo(
+    () => cardPaymentsThisCycle.reduce((sum, p) => sum + (p.amount || 0), 0),
+    [cardPaymentsThisCycle]
+  );
+
+  const getCardPaidThisCycle = (cardId: string) => {
+    const arr = cardPaymentsByCycle[viewCycle.id] ?? [];
+    return arr
+      .filter((p) => p.cardId === cardId)
+      .reduce((sum, p) => sum + (p.amount || 0), 0);
+  };
+
+  const isMinimumPaidThisCycle = (cardId: string) => {
+    const arr = cardPaymentsByCycle[viewCycle.id] ?? [];
+    return arr.some((p) => p.cardId === cardId && p.kind === "minimum");
+  };
+
+  // ✅ Hide paid-off cards everywhere on dashboard by providing an “active cards” helper
+  const activeCreditCards = useMemo(
+    () => (settings.creditCards || []).filter((c) => (Number(c.balance ?? 0) || 0) > 0),
+    [settings.creditCards]
+  );
+
+  /**
+   * ✅ Update a single card balance safely (clamped >= 0)
+   */
+  const applyPaymentToCardBalance = (cardId: string, amount: number) => {
+    const amt = Math.max(0, Number(amount || 0));
+    if (amt <= 0) return 0;
+
+    let applied = 0;
+
+    setSettings((s) => {
+      const nextCards = (s.creditCards || []).map((c) => {
+        if (c.id !== cardId) return c;
+        const bal = Math.max(0, Number(c.balance ?? 0) || 0);
+        applied = Math.min(amt, bal);
+        return { ...c, balance: Math.max(0, bal - applied) };
+      });
+      return { ...s, creditCards: nextCards };
+    });
+
+    return applied;
+  };
+
+  /**
+   * ✅ Undo a payment on card balance (adds back, clamped >=0)
+   */
+  const undoPaymentOnCardBalance = (cardId: string, amount: number) => {
+    const amt = Math.max(0, Number(amount || 0));
+    if (amt <= 0) return;
+
+    setSettings((s) => {
+      const nextCards = (s.creditCards || []).map((c) => {
+        if (c.id !== cardId) return c;
+        const bal = Math.max(0, Number(c.balance ?? 0) || 0);
+        return { ...c, balance: bal + amt };
+      });
+      return { ...s, creditCards: nextCards };
+    });
+  };
+
+  /**
+   * ✅ QUICK DECISION (implemented):
+   * When user UNCHECKS “Minimum paid”, we UNDO it:
+   * - remove the minimum payment record for this cycle
+   * - add that amount back to the card’s balance
+   */
+  const toggleMinimumPaidForCard = (cardId: string) => {
+    const card = (settings.creditCards || []).find((c) => c.id === cardId);
+    if (!card) return;
+
+    const minAmt = Math.max(0, Number(card.minDue || 0));
+    if (minAmt <= 0) return;
+
+    setCardPaymentsByCycle((prev) => {
+      const next = { ...prev };
+      const arr = [...(next[viewCycle.id] ?? [])];
+
+      const idx = arr.findIndex((p) => p.cardId === cardId && p.kind === "minimum");
+
+      if (idx >= 0) {
+        // ✅ uncheck -> undo
+        const removed = arr[idx];
+        arr.splice(idx, 1);
+        next[viewCycle.id] = arr;
+        // add back to balance
+        undoPaymentOnCardBalance(cardId, removed.amount || 0);
+        return next;
+      }
+
+      // ✅ check -> add minimum payment record and reduce balance
+      const record: CardPayment = {
+        id: `ccpay_${Date.now()}`,
+        cycleId: viewCycle.id,
+        cardId,
+        amount: minAmt,
+        kind: "minimum",
+        atISO: new Date().toISOString(),
+      };
+
+      next[viewCycle.id] = [record, ...arr];
+
+      // reduce balance (clamped)
+      applyPaymentToCardBalance(cardId, minAmt);
+
+      return next;
+    });
+  };
+
+  /**
+   * ✅ Add manual payment (from dropdown)
+   * - creates payment record
+   * - reduces card balance (clamped)
+   */
+  const addManualCardPayment = (cardId: string, amountText: string) => {
+    const amt = safeParseNumber(amountText);
+    if (amt <= 0) return false;
+
+    const card = (settings.creditCards || []).find((c) => c.id === cardId);
+    if (!card) return false;
+
+    const bal = Math.max(0, Number(card.balance ?? 0) || 0);
+    if (bal <= 0) return false; // paid off already
+
+    const applied = Math.min(amt, bal);
+
+    const record: CardPayment = {
+      id: `ccpay_${Date.now()}`,
+      cycleId: viewCycle.id,
+      cardId,
+      amount: applied, // store applied (not requested) to keep ledger consistent
+      kind: "manual",
+      atISO: new Date().toISOString(),
+    };
+
+    setCardPaymentsByCycle((prev) => {
+      const next = { ...prev };
+      const arr = [...(next[viewCycle.id] ?? [])];
+      next[viewCycle.id] = [record, ...arr];
+      return next;
+    });
+
+    applyPaymentToCardBalance(cardId, applied);
+    return true;
+  };
+
+  /**
+   * ✅ Optional: remove a payment record (undo)
+   * (Handy for a History screen later.)
+   */
+  const removeCardPayment = (cycleId: string, paymentId: string) => {
+    setCardPaymentsByCycle((prev) => {
+      const next = { ...prev };
+      const arr = [...(next[cycleId] ?? [])];
+      const idx = arr.findIndex((p) => p.id === paymentId);
+      if (idx < 0) return prev;
+
+      const removed = arr[idx];
+      arr.splice(idx, 1);
+      next[cycleId] = arr;
+
+      // undo balance impact ONLY if removing from current settings makes sense
+      // (We always undo because balance is your single source of truth for debt remaining.)
+      undoPaymentOnCardBalance(removed.cardId, removed.amount || 0);
+
+      return next;
+    });
+  };
+
   const totals = useMemo(() => {
     const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
     const done = items.reduce(
@@ -590,8 +755,13 @@ export function usePayflow() {
     const itemsTotal = items.length;
     const itemsDone = items.filter((i) => activeChecked[i.id]?.checked).length;
     const pct = itemsTotal ? Math.round((itemsDone / itemsTotal) * 100) : 0;
-    return { planned, done, itemsTotal, itemsDone, pct };
-  }, [items, activeChecked]);
+
+    // ✅ Useful additional number: planned remaining AFTER card payments this cycle
+    // (Dashboard can use this to show “Remaining” accurately.)
+    const plannedPlusCardPayments = planned + (cardPaymentsTotalThisCycle || 0);
+
+    return { planned, done, itemsTotal, itemsDone, pct, plannedPlusCardPayments };
+  }, [items, activeChecked, cardPaymentsTotalThisCycle]);
 
   // load
   useEffect(() => {
@@ -604,6 +774,7 @@ export function usePayflow() {
           if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
           if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
           if (parsed?.unexpectedByCycle) setUnexpectedByCycle(parsed.unexpectedByCycle);
+          if (parsed?.cardPaymentsByCycle) setCardPaymentsByCycle(parsed.cardPaymentsByCycle);
           setHasCompletedSetup(!!parsed?.hasCompletedSetup);
         }
       } catch {
@@ -624,6 +795,7 @@ export function usePayflow() {
       appliedDebtCycles,
       activeCycleId: viewCycle.id,
       unexpectedByCycle,
+      cardPaymentsByCycle,
     };
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
   }, [
@@ -633,6 +805,7 @@ export function usePayflow() {
     checkedByCycle,
     appliedDebtCycles,
     unexpectedByCycle,
+    cardPaymentsByCycle,
     viewCycle.id,
   ]);
 
@@ -649,10 +822,9 @@ export function usePayflow() {
 
   /**
    * ✅ Apply-to-debt logic (once per cycle)
-   * We keep your existing behavior: the app only reduces debtRemaining once per cycle
-   * when the user checks the "Debt Paydown" item.
+   * Kept as-is for backwards compatibility. This is NOT tied to cards.
    *
-   * The Debt Paydown amount is now “remainder after minimums + planned + unexpected”.
+   * If you decide debtRemaining should represent “other debt” only, this still works.
    */
   useEffect(() => {
     if (!loaded) return;
@@ -709,6 +881,7 @@ export function usePayflow() {
     setCheckedByCycle({});
     setAppliedDebtCycles({});
     setUnexpectedByCycle({});
+    setCardPaymentsByCycle({});
     setHasCompletedSetup(false);
     setCycleOffset(0);
     try {
@@ -727,6 +900,8 @@ export function usePayflow() {
   };
 
   const getCycleChecked = (cycleId: string) => checkedByCycle[cycleId] ?? {};
+
+  const getCycleCardPayments = (cycleId: string) => cardPaymentsByCycle[cycleId] ?? [];
 
   return {
     loaded,
@@ -754,9 +929,22 @@ export function usePayflow() {
 
     personalSpendingTotal,
 
+    // ✅ Cards
+    activeCreditCards,
+
+    // ✅ Card payments
+    cardPaymentsThisCycle,
+    cardPaymentsTotalThisCycle,
+    getCardPaidThisCycle,
+    isMinimumPaidThisCycle,
+    toggleMinimumPaidForCard, // used by minimum checkbox UI
+    addManualCardPayment, // used by “Add Payment” dropdown UI
+    removeCardPayment, // optional / for History
+
     last10Cycles,
     getCycleUnexpectedTotal,
     getCycleChecked,
+    getCycleCardPayments,
 
     toggleItem,
     resetEverything,
