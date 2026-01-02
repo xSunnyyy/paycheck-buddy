@@ -1,5 +1,5 @@
 // mobile-app/App.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   Alert,
   Platform,
   StatusBar,
+  KeyboardAvoidingView,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -20,25 +21,20 @@ import {
 
 /**
  * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
- * - Stores everything on device (AsyncStorage)
- * - User inputs: income, bills (dueDay), ONE total debt, monthly expense (single item), pay schedule
- * - Checklist remains: categories, checkboxes, per-cycle
+ * ✅ Includes:
+ * - First-time setup gate (hasCompletedSetup)
+ * - New STORAGE_KEY so old data won't persist
+ * - Calendar picker for anchor payday (weekly/biweekly) — DOES NOT auto-open
+ * - Force date selection during setup for weekly/biweekly (blocks Finish Setup)
+ * - Dynamic allocations list (add/remove pay-per items)
+ * - Scroll inputs into view on focus (setup + settings)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
- *
- * ✅ Included here:
- * - First-time setup gating (hasCompletedSetup)
- * - Schema versioning
- * - Calendar date picker for anchor payday (weekly/biweekly)
- * - FORCE date selection in setup (anchorISO starts empty, validation blocks finish)
- * - Auto-open calendar on first setup load if not selected
- * - Red outline when user tries to finish without selecting date
- * - Preview text ("Next payday ... • Weekly/Bi-weekly")
  */
 
 /** -------------------- Types -------------------- */
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
-type Category = "Bills" | "Monthly" | "Savings" | "Investing" | "Fuel" | "Debt";
+type Category = "Bills" | "Monthly" | "Allocations" | "Debt";
 
 type Bill = {
   id: string;
@@ -47,25 +43,38 @@ type Bill = {
   dueDay: number; // 1–31
 };
 
+type Allocation = {
+  id: string;
+  label: string;
+  amount: number;
+};
+
 type Settings = {
   payFrequency: PayFrequency;
 
+  // Pay amount per pay event
   payAmount: number;
-  anchorISO: string; // weekly/biweekly only (forced during setup)
 
+  // Anchor date for weekly/biweekly
+  anchorISO: string; // empty until user selects during setup
+
+  // Twice-monthly paydays
   twiceMonthlyDay1: number; // 1–28
   twiceMonthlyDay2: number; // 1–28
+
+  // Monthly payday
   monthlyPayDay: number; // 1–28
 
   bills: Bill[];
 
+  // Monthly single item
   monthlyLabel: string;
   monthlyAmount: number;
 
-  savingsPerPay: number;
-  investingPerPay: number;
-  fuelPerPay: number;
+  // Dynamic per-pay allocations
+  allocations: Allocation[];
 
+  // One total debt
   debtRemaining: number;
 };
 
@@ -81,26 +90,23 @@ type Cycle = {
 
 /** -------------------- Storage -------------------- */
 
-// Bump SCHEMA_VERSION to force wipe / re-setup if needed.
-const STORAGE_KEY = "pb_mobile_v2";
-const SCHEMA_VERSION = 2;
+// ✅ NEW KEY so prior data won't carry over
+const STORAGE_KEY = "pb_mobile_v4";
 
 type Persisted = {
-  schemaVersion: number;
   hasCompletedSetup: boolean;
-
   settings: Settings;
   checkedByCycle: Record<string, CheckedState>;
   appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
 };
 
-// ✅ Defaults: everything 0 and anchorISO intentionally empty to force selection in setup
 const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
   payAmount: 0,
 
-  anchorISO: "", // ✅ force user to pick in setup for weekly/biweekly
+  // ✅ force pick during setup (weekly/biweekly)
+  anchorISO: "",
 
   twiceMonthlyDay1: 1,
   twiceMonthlyDay2: 15,
@@ -108,15 +114,17 @@ const defaultSettings = (): Settings => ({
 
   bills: [],
 
-  monthlyLabel: "Rent",
+  monthlyLabel: "Monthly Expense",
   monthlyAmount: 0,
 
-  savingsPerPay: 0,
-  investingPerPay: 0,
-  fuelPerPay: 0,
+  // ✅ dynamic allocations start empty
+  allocations: [],
 
+  // ✅ start at 0 as requested
   debtRemaining: 0,
 });
+
+/** -------------------- Helpers -------------------- */
 
 const safeParseNumber = (s: string) => {
   const n = Number(String(s).replace(/[^0-9.]/g, ""));
@@ -153,8 +161,6 @@ function formatDate(d: Date) {
   });
 }
 
-/** ✅ Anchor helpers (calendar) */
-
 function hasValidAnchorDate(iso: string) {
   if (!iso) return false;
   const d = new Date(iso);
@@ -162,34 +168,12 @@ function hasValidAnchorDate(iso: string) {
 }
 
 function toAnchorISO(d: Date) {
-  // Simple + consistent storage
   return d.toISOString();
 }
 
 function anchorDateFromISO(iso: string) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date() : d;
-}
-
-// Preview: compute next payday from anchor for weekly/biweekly
-function getNextPaydayFromAnchor(payFrequency: PayFrequency, anchorISO: string, now = new Date()) {
-  if (!(payFrequency === "weekly" || payFrequency === "biweekly")) return null;
-  if (!hasValidAnchorDate(anchorISO)) return null;
-
-  const stepDays = payFrequency === "weekly" ? 7 : 14;
-  const stepMs = stepDays * 86400000;
-
-  const anchor = startOfDay(new Date(anchorISO));
-  const today = startOfDay(now);
-
-  const a = anchor.getTime();
-  const t = today.getTime();
-
-  if (t <= a) return anchor;
-
-  const diff = t - a;
-  const k = Math.ceil(diff / stepMs);
-  return startOfDay(new Date(a + k * stepMs));
 }
 
 /** -------------------- Visual system -------------------- */
@@ -203,7 +187,8 @@ const COLORS = {
   border: "rgba(255,255,255,0.12)",
   borderSoft: "rgba(255,255,255,0.09)",
   glassB: "rgba(255,255,255,0.045)",
-  green: "rgba(34,197,94,1)",
+  greenSoft: "rgba(34,197,94,0.16)",
+  redBorder: "rgba(248,113,113,0.55)",
 };
 
 const TYPE = {
@@ -213,7 +198,7 @@ const TYPE = {
   body: { fontSize: 13, fontWeight: "600" as const },
 };
 
-/** -------------------- Schedule engine (all 4 options) -------------------- */
+/** -------------------- Schedule engine -------------------- */
 
 function cycleIdFromDate(prefix: string, d: Date) {
   const y = d.getFullYear();
@@ -228,7 +213,7 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
     const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
 
-    // ✅ Safety: if anchorISO is missing (dev/hot reload), fall back to today so app doesn't crash.
+    // Safety fallback (should never hit if setup was completed properly)
     const anchorISO = hasValidAnchorDate(settings.anchorISO)
       ? settings.anchorISO
       : new Date().toISOString();
@@ -284,6 +269,7 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
     return { id, label, start, end, payday };
   }
 
+  // monthly
   const day = clamp(settings.monthlyPayDay || 1, 1, 28);
   const year = n.getFullYear();
   const month = n.getMonth();
@@ -307,7 +293,7 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   return { id, label, start, end, payday };
 }
 
-/** -------------------- Smart bill assignment (dueDay -> cycle) -------------------- */
+/** -------------------- Bills due date -> cycle assignment -------------------- */
 
 function billDueDateForMonth(bill: Bill, ref: Date) {
   const year = ref.getFullYear();
@@ -322,7 +308,7 @@ function isBetweenInclusive(d: Date, a: Date, b: Date) {
   return t >= a.getTime() && t <= b.getTime();
 }
 
-/** -------------------- Checklist item generation -------------------- */
+/** -------------------- Checklist items -------------------- */
 
 type ChecklistItem = {
   id: string;
@@ -335,6 +321,7 @@ type ChecklistItem = {
 function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem[] {
   const items: ChecklistItem[] = [];
 
+  // Bills included if due date falls in cycle range
   for (const bill of settings.bills || []) {
     const due = billDueDateForMonth(bill, cycle.start);
     const due2 = billDueDateForMonth(bill, cycle.end);
@@ -354,6 +341,7 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     }
   }
 
+  // Monthly single item
   if ((settings.monthlyAmount || 0) > 0) {
     items.push({
       id: "monthly_single",
@@ -364,36 +352,21 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     });
   }
 
-  if ((settings.savingsPerPay || 0) > 0) {
-    items.push({
-      id: "save_perpay",
-      label: "Transfer to Savings",
-      amount: settings.savingsPerPay || 0,
-      category: "Savings",
-      notes: "Repeat each pay cycle",
-    });
+  // Dynamic allocations
+  for (const a of settings.allocations || []) {
+    const amt = a.amount || 0;
+    if (amt > 0) {
+      items.push({
+        id: `alloc_${a.id}`,
+        label: a.label || "Allocation",
+        amount: amt,
+        category: "Allocations",
+        notes: "Repeat each pay cycle",
+      });
+    }
   }
 
-  if ((settings.investingPerPay || 0) > 0) {
-    items.push({
-      id: "invest_perpay",
-      label: "Investing",
-      amount: settings.investingPerPay || 0,
-      category: "Investing",
-      notes: "Repeat each pay cycle",
-    });
-  }
-
-  if ((settings.fuelPerPay || 0) > 0) {
-    items.push({
-      id: "fuel_perpay",
-      label: "Fuel / Variable Fund",
-      amount: settings.fuelPerPay || 0,
-      category: "Fuel",
-      notes: "Repeat each pay cycle",
-    });
-  }
-
+  // Debt remainder
   items.push({
     id: "debt_paydown",
     label: "Debt Paydown",
@@ -421,7 +394,7 @@ function groupByCategory(items: ChecklistItem[]) {
   return Array.from(map.entries());
 }
 
-/** -------------------- UI components -------------------- */
+/** -------------------- UI Components -------------------- */
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
@@ -457,6 +430,24 @@ function Divider() {
         marginVertical: 10,
       }}
     />
+  );
+}
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <View
+      style={{
+        alignSelf: "flex-start",
+        paddingVertical: 6,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
+        backgroundColor: "rgba(255,255,255,0.06)",
+      }}
+    >
+      <Text style={{ color: COLORS.text, fontWeight: "800" }}>{children}</Text>
+    </View>
   );
 }
 
@@ -503,21 +494,37 @@ function TextBtn({
   );
 }
 
+/**
+ * Field that:
+ * - captures its Y position via onLayout
+ * - scrolls to itself when focused (so typing is visible)
+ */
 function Field({
   label,
   value,
   onChangeText,
   keyboardType = "default",
   placeholder,
+  onFocusScrollToY,
+  borderColorOverride,
 }: {
   label: string;
   value: string;
   onChangeText: (s: string) => void;
   keyboardType?: "default" | "numeric";
   placeholder?: string;
+  onFocusScrollToY?: (y: number) => void;
+  borderColorOverride?: string;
 }) {
+  const yRef = useRef<number>(0);
+
   return (
-    <View style={{ marginTop: 10 }}>
+    <View
+      style={{ marginTop: 10 }}
+      onLayout={(e) => {
+        yRef.current = e.nativeEvent.layout.y;
+      }}
+    >
       <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
       <TextInput
         value={value}
@@ -525,10 +532,14 @@ function Field({
         keyboardType={keyboardType}
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
+        onFocus={() => {
+          // scroll a bit above the field so it isn't under the keyboard
+          if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 20));
+        }}
         style={{
           marginTop: 6,
           borderWidth: 1,
-          borderColor: COLORS.border,
+          borderColor: borderColorOverride ?? COLORS.border,
           borderRadius: 14,
           paddingVertical: Platform.OS === "ios" ? 12 : 10,
           paddingHorizontal: 12,
@@ -555,9 +566,10 @@ export default function App() {
 
 function AppInner() {
   const insets = useSafeAreaInsets();
-  const [screen, setScreen] = useState<Screen>("checklist");
 
+  const [screen, setScreen] = useState<Screen>("checklist");
   const [loaded, setLoaded] = useState(false);
+
   const [hasCompletedSetup, setHasCompletedSetup] = useState(false);
 
   const [settings, setSettings] = useState<Settings>(defaultSettings());
@@ -566,6 +578,7 @@ function AppInner() {
 
   const cycle = useMemo(() => getCurrentCycle(settings, new Date()), [settings]);
   const activeChecked = checkedByCycle[cycle.id] ?? {};
+
   const items = useMemo(() => buildChecklistForCycle(settings, cycle), [settings, cycle]);
   const grouped = useMemo(() => groupByCategory(items), [items]);
 
@@ -581,25 +594,17 @@ function AppInner() {
     return { planned, done, itemsTotal, itemsDone, pct };
   }, [items, activeChecked]);
 
-  // Load from storage on boot
+  // Load from storage
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as Persisted;
-
-          if (parsed?.schemaVersion === SCHEMA_VERSION && parsed?.settings) {
-            setSettings(parsed.settings);
-            setCheckedByCycle(parsed.checkedByCycle || {});
-            setAppliedDebtCycles(parsed.appliedDebtCycles || {});
-            setHasCompletedSetup(!!parsed.hasCompletedSetup);
-          } else {
-            setSettings(defaultSettings());
-            setCheckedByCycle({});
-            setAppliedDebtCycles({});
-            setHasCompletedSetup(false);
-          }
+          if (parsed?.settings) setSettings(parsed.settings);
+          if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
+          if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
+          setHasCompletedSetup(!!parsed?.hasCompletedSetup);
         } else {
           setHasCompletedSetup(false);
         }
@@ -610,11 +615,10 @@ function AppInner() {
     })();
   }, []);
 
-  // Save to storage whenever state changes
+  // Save to storage
   useEffect(() => {
     if (!loaded) return;
     const data: Persisted = {
-      schemaVersion: SCHEMA_VERSION,
       hasCompletedSetup,
       settings,
       checkedByCycle,
@@ -635,7 +639,7 @@ function AppInner() {
     });
   }
 
-  // Auto-decrease debtRemaining when debt_paydown transitions to checked (once per cycle)
+  // Debt auto-decrease when debt_paydown is checked, once per cycle
   useEffect(() => {
     if (!loaded) return;
     if (!hasCompletedSetup) return;
@@ -665,7 +669,8 @@ function AppInner() {
         text: "Reset ALL",
         style: "destructive",
         onPress: async () => {
-          setSettings(defaultSettings());
+          const fresh = defaultSettings();
+          setSettings(fresh);
           setCheckedByCycle({});
           setAppliedDebtCycles({});
           setHasCompletedSetup(false);
@@ -682,51 +687,63 @@ function AppInner() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 20 }}>
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  // ✅ Setup gate
+  // Setup gate
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View
-          style={{
-            flex: 1,
-            paddingHorizontal: 16,
-            paddingTop: 10,
-            paddingBottom: 14 + insets.bottom,
-            backgroundColor: COLORS.bg,
-          }}
+
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         >
-          <View style={{ paddingTop: Math.max(0, insets.top) }}>
-            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to Paycheck Buddy</Text>
-            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-              Let’s set up your pay schedule and expenses.
-            </Text>
-          </View>
-
-          <ScrollView style={{ marginTop: 12 }} contentContainerStyle={{ paddingBottom: 30 }}>
-            <SettingsScreen
-              settings={settings}
-              onChange={(s) => setSettings(s)}
-              onBack={() => {}}
-              mode="setup"
-              onFinishSetup={() => {
-                setHasCompletedSetup(true);
-                setScreen("checklist");
-              }}
-            />
-
-            <View style={{ marginTop: 12 }}>
-              <TextBtn label="Reset ALL (start over)" onPress={resetEverything} kind="red" />
+          <View
+            style={{
+              flex: 1,
+              paddingHorizontal: 16,
+              paddingTop: 10,
+              paddingBottom: 14 + insets.bottom,
+              backgroundColor: COLORS.bg,
+            }}
+          >
+            <View style={{ paddingTop: Math.max(0, insets.top) }}>
+              <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to Paycheck Buddy</Text>
+              <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                Let’s set up your pay schedule and expenses.
+              </Text>
             </View>
-          </ScrollView>
-        </View>
+
+            <ScrollView
+              style={{ marginTop: 12 }}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 30 }}
+              showsVerticalScrollIndicator={false}
+            >
+              <SettingsScreen
+                mode="setup"
+                settings={settings}
+                onChange={setSettings}
+                onBack={() => {}}
+                onFinishSetup={() => {
+                  setHasCompletedSetup(true);
+                  setScreen("checklist");
+                }}
+              />
+
+              <View style={{ marginTop: 12 }}>
+                <TextBtn label="Reset ALL (start over)" onPress={resetEverything} kind="red" />
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }
@@ -736,203 +753,211 @@ function AppInner() {
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
-      <View
-        style={{
-          flex: 1,
-          paddingHorizontal: 16,
-          paddingTop: 10,
-          paddingBottom: 14 + insets.bottom,
-          backgroundColor: COLORS.bg,
-        }}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View
           style={{
-            flexDirection: "row",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 10,
-            paddingTop: Math.max(0, insets.top),
+            flex: 1,
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            paddingBottom: 14 + insets.bottom,
+            backgroundColor: COLORS.bg,
           }}
         >
-          <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Paycheck Buddy</Text>
+          {/* Top nav */}
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 10,
+              paddingTop: Math.max(0, insets.top),
+            }}
+          >
+            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Paycheck Buddy</Text>
 
-          <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
-            <TextBtn
-              label="Checklist"
-              onPress={() => setScreen("checklist")}
-              kind={screen === "checklist" ? "green" : "default"}
-            />
-            <TextBtn
-              label="Settings"
-              onPress={() => setScreen("settings")}
-              kind={screen === "settings" ? "green" : "default"}
-            />
+            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+              <TextBtn
+                label="Checklist"
+                onPress={() => setScreen("checklist")}
+                kind={screen === "checklist" ? "green" : "default"}
+              />
+              <TextBtn
+                label="Settings"
+                onPress={() => setScreen("settings")}
+                kind={screen === "settings" ? "green" : "default"}
+              />
+            </View>
           </View>
-        </View>
 
-        <ScrollView
-          style={{ marginTop: 12 }}
-          contentContainerStyle={{ paddingBottom: 30, paddingTop: 2 }}
-          showsVerticalScrollIndicator={false}
-        >
-          {screen === "checklist" ? (
-            <>
-              <Card>
-                <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                  {cycle.label} • Payday:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>{formatDate(cycle.payday)}</Text>
-                </Text>
-
-                <Divider />
-
-                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                  Pay amount:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.payAmount)}</Text>
-                </Text>
-                <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
-                  Debt remaining:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.debtRemaining)}</Text>
-                </Text>
-
-                <Divider />
-
-                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                  Planned: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(totals.planned)}</Text>
-                </Text>
-                <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
-                  Completed: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(totals.done)}</Text>
-                </Text>
-
-                <Text style={{ color: COLORS.muted, marginTop: 8, fontWeight: "700" }}>
-                  Progress:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>
-                    {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+          <ScrollView
+            style={{ marginTop: 12 }}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingBottom: 30, paddingTop: 2 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {screen === "checklist" ? (
+              <>
+                {/* Summary */}
+                <Card>
+                  <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                    {cycle.label} • Payday:{" "}
+                    <Text style={{ color: COLORS.textStrong }}>{formatDate(cycle.payday)}</Text>
                   </Text>
-                </Text>
 
-                <Divider />
+                  <Divider />
 
-                <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
-              </Card>
-
-              <View style={{ marginTop: 12, gap: 12 }}>
-                {grouped.map(([cat, catItems]) => (
-                  <Card key={cat}>
-                    <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
-                    <Divider />
-                    <View style={{ gap: 10 }}>
-                      {catItems.map((it) => {
-                        const state = activeChecked[it.id];
-                        const isChecked = !!state?.checked;
-
-                        return (
-                          <Pressable
-                            key={it.id}
-                            onPress={() => toggleItem(it.id)}
-                            style={{
-                              padding: 12,
-                              borderRadius: 16,
-                              borderWidth: 1,
-                              borderColor: "rgba(255,255,255,0.09)",
-                              backgroundColor: isChecked
-                                ? "rgba(34,197,94,0.14)"
-                                : "rgba(255,255,255,0.03)",
-                            }}
-                          >
-                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                              {isChecked ? "✅ " : "⬜ "} {it.label}
-                            </Text>
-                            <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                              {fmtMoney(it.amount)}
-                              {it.notes ? ` • ${it.notes}` : ""}
-                              {isChecked && state?.at
-                                ? ` • checked ${new Date(state.at).toLocaleString()}`
-                                : ""}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
+                  <View style={{ gap: 10 }}>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
+                      <Chip>{fmtMoney(settings.payAmount)}</Chip>
                     </View>
-                  </Card>
-                ))}
-              </View>
 
-              <Text
-                style={{
-                  color: "rgba(185,193,204,0.58)",
-                  marginTop: 14,
-                  textAlign: "center",
-                  fontWeight: "700",
-                }}
-              >
-                Offline • Saved on-device
-              </Text>
-            </>
-          ) : (
-            <SettingsScreen
-              settings={settings}
-              onChange={setSettings}
-              onBack={() => setScreen("checklist")}
-              mode="normal"
-              onFinishSetup={() => {}}
-            />
-          )}
-        </ScrollView>
-      </View>
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
+                      <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
+                    </View>
+
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                      <Chip>{fmtMoney(totals.planned)}</Chip>
+                    </View>
+
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
+                      <Chip>{fmtMoney(totals.done)}</Chip>
+                    </View>
+
+                    <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                      Progress:{" "}
+                      <Text style={{ color: COLORS.textStrong }}>
+                        {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                      </Text>
+                    </Text>
+                  </View>
+
+                  <Divider />
+
+                  <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
+                </Card>
+
+                {/* Checklist */}
+                <View style={{ marginTop: 12, gap: 12 }}>
+                  {grouped.map(([cat, catItems]) => {
+                    const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
+                    return (
+                      <Card key={cat}>
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
+                          <Chip>{fmtMoney(plannedForCat)} planned</Chip>
+                        </View>
+
+                        <Divider />
+
+                        <View style={{ gap: 10 }}>
+                          {catItems.map((it) => {
+                            const state = activeChecked[it.id];
+                            const isChecked = !!state?.checked;
+
+                            return (
+                              <Pressable
+                                key={it.id}
+                                onPress={() => toggleItem(it.id)}
+                                style={{
+                                  padding: 12,
+                                  borderRadius: 16,
+                                  borderWidth: 1,
+                                  borderColor: COLORS.borderSoft,
+                                  backgroundColor: isChecked ? COLORS.greenSoft : "rgba(255,255,255,0.03)",
+                                }}
+                              >
+                                <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                      {isChecked ? "✅ " : "⬜ "} {it.label}
+                                    </Text>
+                                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                      {fmtMoney(it.amount)}
+                                      {it.notes ? ` • ${it.notes}` : ""}
+                                      {isChecked && state?.at
+                                        ? ` • checked ${new Date(state.at).toLocaleString()}`
+                                        : ""}
+                                    </Text>
+                                  </View>
+                                  <Chip>{fmtMoney(it.amount)}</Chip>
+                                </View>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      </Card>
+                    );
+                  })}
+                </View>
+
+                <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+                  Offline • Saved on-device
+                </Text>
+              </>
+            ) : (
+              <SettingsScreen
+                mode="normal"
+                settings={settings}
+                onChange={setSettings}
+                onBack={() => setScreen("checklist")}
+                onFinishSetup={() => {}}
+              />
+            )}
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-/** -------------------- Settings screen -------------------- */
+/** -------------------- Settings Screen -------------------- */
 
 function SettingsScreen({
+  mode,
   settings,
   onChange,
   onBack,
-  mode,
   onFinishSetup,
 }: {
+  mode: "setup" | "normal";
   settings: Settings;
   onChange: (s: Settings) => void;
   onBack: () => void;
-  mode: "setup" | "normal";
   onFinishSetup: () => void;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+
   const [local, setLocal] = useState<Settings>(settings);
+
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
-
-  // ✅ Used for "red outline when user tries to save without selecting"
   const [anchorError, setAnchorError] = useState(false);
-
-  // ✅ Auto-open calendar once in setup when anchor isn't selected
-  const [didAutoOpenAnchor, setDidAutoOpenAnchor] = useState(false);
 
   useEffect(() => setLocal(settings), [settings]);
 
-  useEffect(() => {
-    if (mode !== "setup") return;
-
-    const needsAnchor =
-      (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
-      !hasValidAnchorDate(local.anchorISO);
-
-    if (needsAnchor && !didAutoOpenAnchor) {
-      setDidAutoOpenAnchor(true);
-      setShowAnchorPicker(true);
-    }
-  }, [mode, local.payFrequency, local.anchorISO, didAutoOpenAnchor]);
+  const onFocusScrollToY = (y: number) => {
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y, animated: true });
+    }, 60);
+  };
 
   function save() {
-    // ✅ Force anchor selection in setup for weekly/biweekly
+    // Force anchor selection in setup for weekly/biweekly
     if (
-      mode === "setup" &&
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
     ) {
-      setAnchorError(true); // ✅ red outline
-      setShowAnchorPicker(true); // ✅ open calendar
-      Alert.alert("Select a payday", "Please choose your first payday to continue.");
-      return;
+      if (mode === "setup") {
+        setAnchorError(true);
+        Alert.alert("Select a payday", "Please choose your first payday to finish setup.");
+        return;
+      }
     }
 
     if (local.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
@@ -957,7 +982,6 @@ function SettingsScreen({
 
   function setFreq(f: PayFrequency) {
     setLocal((s) => ({ ...s, payFrequency: f }));
-    // clear anchor error if switching away
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
@@ -983,6 +1007,28 @@ function SettingsScreen({
     }));
   }
 
+  function addAllocation() {
+    const id = `alloc_${Date.now()}`;
+    setLocal((s) => ({
+      ...s,
+      allocations: [...(s.allocations || []), { id, label: "New Allocation", amount: 0 }],
+    }));
+  }
+
+  function updateAllocation(id: string, patch: Partial<Allocation>) {
+    setLocal((s) => ({
+      ...s,
+      allocations: (s.allocations || []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
+    }));
+  }
+
+  function removeAllocation(id: string) {
+    setLocal((s) => ({
+      ...s,
+      allocations: (s.allocations || []).filter((a) => a.id !== id),
+    }));
+  }
+
   const freqLabel = (f: PayFrequency) => {
     if (f === "weekly") return "Weekly";
     if (f === "biweekly") return "Bi-weekly";
@@ -990,281 +1036,303 @@ function SettingsScreen({
     return "Monthly";
   };
 
-  // ✅ Preview for weekly/biweekly anchor selection
-  const nextPayday = useMemo(
-    () => getNextPaydayFromAnchor(local.payFrequency, local.anchorISO, new Date()),
-    [local.payFrequency, local.anchorISO]
-  );
-
-  const shouldShowAnchor =
-    local.payFrequency === "weekly" || local.payFrequency === "biweekly";
-
+  const shouldShowAnchor = local.payFrequency === "weekly" || local.payFrequency === "biweekly";
   const anchorSelected = hasValidAnchorDate(local.anchorISO);
 
   return (
-    <View style={{ gap: 12 }}>
-      <Card>
-        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay schedule</Text>
-        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-          Choose one of the 4 options.
-        </Text>
+    <ScrollView
+      ref={scrollRef}
+      keyboardShouldPersistTaps="handled"
+      contentContainerStyle={{ paddingBottom: 30 }}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={{ gap: 12 }}>
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
+            {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
+          </Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            Choose one of the 4 options.
+          </Text>
 
-        <Divider />
+          <Divider />
 
-        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-          {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
-            <TextBtn
-              key={f}
-              label={freqLabel(f)}
-              onPress={() => setFreq(f)}
-              kind={local.payFrequency === f ? "green" : "default"}
-            />
-          ))}
-        </View>
+          <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+            {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
+              <TextBtn
+                key={f}
+                label={freqLabel(f)}
+                onPress={() => setFreq(f)}
+                kind={local.payFrequency === f ? "green" : "default"}
+              />
+            ))}
+          </View>
 
-        <Field
-          label="Pay amount (per pay event)"
-          value={String(local.payAmount)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
+          <Field
+            label="Pay amount (per pay event)"
+            value={String(local.payAmount)}
+            onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
+            keyboardType="numeric"
+            placeholder="0"
+            onFocusScrollToY={onFocusScrollToY}
+          />
 
-        {/* ✅ Anchor payday calendar for weekly/biweekly */}
-        {shouldShowAnchor ? (
-          <>
-            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
-              Anchor payday
-            </Text>
+          {/* ✅ Anchor payday calendar (no auto-open) */}
+          {shouldShowAnchor ? (
+            <>
+              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
+                Anchor payday
+              </Text>
 
-            <Pressable
-              onPress={() => setShowAnchorPicker(true)}
-              style={{
-                marginTop: 6,
-                borderWidth: 1,
-                borderColor: anchorError && !anchorSelected ? "rgba(248,113,113,0.55)" : COLORS.border, // ✅ red outline on error
-                borderRadius: 14,
-                paddingVertical: 12,
-                paddingHorizontal: 12,
-                backgroundColor: "rgba(255,255,255,0.05)",
-              }}
-            >
-              <Text
+              <Pressable
+                onPress={() => setShowAnchorPicker(true)}
                 style={{
-                  color: anchorSelected ? COLORS.textStrong : COLORS.faint,
-                  fontWeight: "800",
+                  marginTop: 6,
+                  borderWidth: 1,
+                  borderColor: anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
+                  borderRadius: 14,
+                  paddingVertical: 12,
+                  paddingHorizontal: 12,
+                  backgroundColor: "rgba(255,255,255,0.05)",
                 }}
               >
-                {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
-              </Text>
-              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                Tap to pick a date
-              </Text>
-
-              {/* ✅ Preview text */}
-              {nextPayday ? (
-                <Text style={{ color: COLORS.muted, marginTop: 8, fontWeight: "700" }}>
-                  Next payday:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>{formatDate(nextPayday)}</Text>
-                  {"  "}•{"  "}
-                  <Text style={{ color: COLORS.textStrong }}>
-                    {local.payFrequency === "weekly" ? "Weekly" : "Bi-weekly"}
-                  </Text>
+                <Text
+                  style={{
+                    color: anchorSelected ? COLORS.textStrong : COLORS.faint,
+                    fontWeight: "800",
+                  }}
+                >
+                  {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                 </Text>
+                <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                  Tap to pick a date
+                </Text>
+              </Pressable>
+
+              {showAnchorPicker ? (
+                <DateTimePicker
+                  value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
+                  mode="date"
+                  display={Platform.OS === "ios" ? "spinner" : "default"}
+                  onChange={(event, selectedDate) => {
+                    // Android closes on selection/cancel
+                    if (Platform.OS !== "ios") setShowAnchorPicker(false);
+                    if (!selectedDate) return;
+
+                    setAnchorError(false);
+                    setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
+                  }}
+                />
               ) : null}
-            </Pressable>
 
-            {showAnchorPicker ? (
-              <DateTimePicker
-                value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
-                mode="date"
-                display={Platform.OS === "ios" ? "spinner" : "default"}
-                onChange={(event, selectedDate) => {
-                  if (Platform.OS !== "ios") setShowAnchorPicker(false);
-                  if (!selectedDate) return;
+              {Platform.OS === "ios" && showAnchorPicker ? (
+                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                  <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
+                </View>
+              ) : null}
+            </>
+          ) : null}
 
-                  setAnchorError(false); // ✅ clear red outline once selected
-
-                  setLocal((p) => ({
-                    ...p,
-                    anchorISO: toAnchorISO(selectedDate),
-                  }));
-                }}
+          {local.payFrequency === "twice_monthly" ? (
+            <>
+              <Field
+                label="Twice-monthly payday #1 (1–28)"
+                value={String(local.twiceMonthlyDay1)}
+                onChangeText={(s) =>
+                  setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
+                }
+                keyboardType="numeric"
+                placeholder="1"
+                onFocusScrollToY={onFocusScrollToY}
               />
-            ) : null}
+              <Field
+                label="Twice-monthly payday #2 (1–28)"
+                value={String(local.twiceMonthlyDay2)}
+                onChangeText={(s) =>
+                  setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
+                }
+                keyboardType="numeric"
+                placeholder="15"
+                onFocusScrollToY={onFocusScrollToY}
+              />
+            </>
+          ) : null}
 
-            {Platform.OS === "ios" && showAnchorPicker ? (
-              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
-              </View>
-            ) : null}
-
-            <Text style={{ color: COLORS.faint, marginTop: 6, fontWeight: "700" }}>
-              Tip: set this to your first payday date. Cycles repeat from here.
-            </Text>
-          </>
-        ) : null}
-
-        {local.payFrequency === "twice_monthly" ? (
-          <>
+          {local.payFrequency === "monthly" ? (
             <Field
-              label="Twice-monthly payday #1 (1–28)"
-              value={String(local.twiceMonthlyDay1)}
+              label="Monthly payday (1–28)"
+              value={String(local.monthlyPayDay)}
               onChangeText={(s) =>
-                setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
+                setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
               }
               keyboardType="numeric"
               placeholder="1"
+              onFocusScrollToY={onFocusScrollToY}
             />
-            <Field
-              label="Twice-monthly payday #2 (1–28)"
-              value={String(local.twiceMonthlyDay2)}
-              onChangeText={(s) =>
-                setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
-              }
-              keyboardType="numeric"
-              placeholder="15"
-            />
-          </>
-        ) : null}
+          ) : null}
+        </Card>
 
-        {local.payFrequency === "monthly" ? (
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            One total debt, auto-decreases when you check Debt Paydown.
+          </Text>
+
+          <Divider />
+
           <Field
-            label="Monthly payday (1–28)"
-            value={String(local.monthlyPayDay)}
-            onChangeText={(s) =>
-              setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
-            }
+            label="Debt remaining"
+            value={String(local.debtRemaining)}
+            onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
             keyboardType="numeric"
-            placeholder="1"
+            placeholder="0"
+            onFocusScrollToY={onFocusScrollToY}
           />
-        ) : null}
-      </Card>
+        </Card>
 
-      <Card>
-        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
-        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-          One total debt, auto-decreases when you check Debt Paydown.
-        </Text>
+        {/* ✅ Dynamic allocations */}
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay-per allocations</Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            Add or remove items that repeat every pay cycle (e.g., Savings, Investing, Fuel).
+          </Text>
 
-        <Divider />
+          <Divider />
 
-        <Field
-          label="Debt remaining"
-          value={String(local.debtRemaining)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
+          <View style={{ gap: 12 }}>
+            {(local.allocations || []).map((a) => (
+              <View
+                key={a.id}
+                style={{
+                  borderWidth: 1,
+                  borderColor: COLORS.borderSoft,
+                  borderRadius: 16,
+                  padding: 12,
+                  backgroundColor: "rgba(255,255,255,0.03)",
+                }}
+              >
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Allocation</Text>
 
-        <Divider />
+                <Field
+                  label="Label"
+                  value={a.label}
+                  onChangeText={(s) => updateAllocation(a.id, { label: s })}
+                  placeholder="Savings"
+                  onFocusScrollToY={onFocusScrollToY}
+                />
+                <Field
+                  label="Amount"
+                  value={String(a.amount)}
+                  onChangeText={(s) => updateAllocation(a.id, { amount: safeParseNumber(s) })}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  onFocusScrollToY={onFocusScrollToY}
+                />
 
-        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Per-pay allocations</Text>
-
-        <Field
-          label="Savings per pay"
-          value={String(local.savingsPerPay)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, savingsPerPay: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
-        <Field
-          label="Investing per pay"
-          value={String(local.investingPerPay)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, investingPerPay: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
-        <Field
-          label="Fuel per pay"
-          value={String(local.fuelPerPay)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, fuelPerPay: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
-      </Card>
-
-      <Card>
-        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
-        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-          This still shows as ONE item in the checklist.
-        </Text>
-
-        <Divider />
-
-        <Field
-          label="Monthly label (e.g., Rent / Groceries / Other)"
-          value={local.monthlyLabel}
-          onChangeText={(s) => setLocal((p) => ({ ...p, monthlyLabel: s }))}
-          placeholder="Rent"
-        />
-        <Field
-          label="Monthly amount"
-          value={String(local.monthlyAmount)}
-          onChangeText={(s) => setLocal((p) => ({ ...p, monthlyAmount: safeParseNumber(s) }))}
-          keyboardType="numeric"
-          placeholder="0"
-        />
-      </Card>
-
-      <Card>
-        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
-        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-          Bills show up automatically in the cycle that contains their due date.
-        </Text>
-
-        <Divider />
-
-        <View style={{ gap: 12 }}>
-          {(local.bills || []).map((b) => (
-            <View
-              key={b.id}
-              style={{
-                borderWidth: 1,
-                borderColor: "rgba(255,255,255,0.09)",
-                borderRadius: 16,
-                padding: 12,
-                backgroundColor: "rgba(255,255,255,0.03)",
-              }}
-            >
-              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Bill</Text>
-
-              <Field label="Name" value={b.name} onChangeText={(s) => updateBill(b.id, { name: s })} />
-              <Field
-                label="Amount"
-                value={String(b.amount)}
-                onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
-                keyboardType="numeric"
-              />
-              <Field
-                label="Due day (1–31)"
-                value={String(b.dueDay)}
-                onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
-                keyboardType="numeric"
-              />
-
-              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                <TextBtn label="Remove bill" onPress={() => removeBill(b.id)} kind="red" />
+                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                  <TextBtn label="Remove allocation" onPress={() => removeAllocation(a.id)} kind="red" />
+                </View>
               </View>
-            </View>
-          ))}
+            ))}
 
-          <TextBtn label="Add bill" onPress={addBill} />
+            <TextBtn label="Add allocation" onPress={addAllocation} />
+          </View>
+        </Card>
+
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            Still shows as ONE item in the checklist.
+          </Text>
+
+          <Divider />
+
+          <Field
+            label="Monthly label (e.g., Rent / Groceries / Other)"
+            value={local.monthlyLabel}
+            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyLabel: s }))}
+            placeholder="Monthly Expense"
+            onFocusScrollToY={onFocusScrollToY}
+          />
+          <Field
+            label="Monthly amount"
+            value={String(local.monthlyAmount)}
+            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyAmount: safeParseNumber(s) }))}
+            keyboardType="numeric"
+            placeholder="0"
+            onFocusScrollToY={onFocusScrollToY}
+          />
+        </Card>
+
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            Bills show up automatically in the cycle that contains their due date.
+          </Text>
+
+          <Divider />
+
+          <View style={{ gap: 12 }}>
+            {(local.bills || []).map((b) => (
+              <View
+                key={b.id}
+                style={{
+                  borderWidth: 1,
+                  borderColor: COLORS.borderSoft,
+                  borderRadius: 16,
+                  padding: 12,
+                  backgroundColor: "rgba(255,255,255,0.03)",
+                }}
+              >
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Bill</Text>
+
+                <Field
+                  label="Name"
+                  value={b.name}
+                  onChangeText={(s) => updateBill(b.id, { name: s })}
+                  placeholder="Verizon"
+                  onFocusScrollToY={onFocusScrollToY}
+                />
+                <Field
+                  label="Amount"
+                  value={String(b.amount)}
+                  onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  onFocusScrollToY={onFocusScrollToY}
+                />
+                <Field
+                  label="Due day (1–31)"
+                  value={String(b.dueDay)}
+                  onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
+                  keyboardType="numeric"
+                  placeholder="1"
+                  onFocusScrollToY={onFocusScrollToY}
+                />
+
+                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                  <TextBtn label="Remove bill" onPress={() => removeBill(b.id)} kind="red" />
+                </View>
+              </View>
+            ))}
+
+            <TextBtn label="Add bill" onPress={addBill} />
+          </View>
+        </Card>
+
+        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+          <TextBtn
+            label={mode === "setup" ? "Finish setup" : "Save settings"}
+            onPress={save}
+            kind="green"
+          />
+          {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
         </View>
-      </Card>
 
-      <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-        <TextBtn
-          label={mode === "setup" ? "Finish setup" : "Save settings"}
-          onPress={save}
-          kind="green"
-        />
-        {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
+        <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
+          Offline • Saved on-device
+        </Text>
       </View>
-
-      <Text style={{ color: "rgba(185,193,204,0.58)", marginTop: 10, textAlign: "center", fontWeight: "700" }}>
-        Offline • Saved on-device
-      </Text>
-    </View>
+    </ScrollView>
   );
 }
