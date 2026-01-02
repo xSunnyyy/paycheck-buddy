@@ -1,5 +1,5 @@
 // src/state/usePayflow.ts
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
@@ -156,8 +156,7 @@ export const fmtMoney = (n: number) =>
     Math.max(0, n || 0)
   );
 
-const clamp = (n: number, min: number, max: number) =>
-  Math.max(min, Math.min(max, n));
+const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
 const startOfDay = (d: Date) => {
   const x = new Date(d);
@@ -225,9 +224,7 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
   if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
     const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
 
-    const anchorISO = hasValidAnchorDate(settings.anchorISO)
-      ? settings.anchorISO
-      : new Date().toISOString();
+    const anchorISO = hasValidAnchorDate(settings.anchorISO) ? settings.anchorISO : new Date().toISOString();
     const anchor = startOfDay(new Date(anchorISO));
 
     const t = n.getTime();
@@ -239,10 +236,7 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
     const end = addDays(start, settings.payFrequency === "weekly" ? 6 : 13);
 
     const id = cycleIdFromDate(settings.payFrequency, payday);
-    const label =
-      settings.payFrequency === "weekly"
-        ? `Week of ${formatDate(payday)}`
-        : `Bi-week of ${formatDate(payday)}`;
+    const label = settings.payFrequency === "weekly" ? `Week of ${formatDate(payday)}` : `Bi-week of ${formatDate(payday)}`;
 
     return { id, label, start, end, payday };
   }
@@ -262,9 +256,7 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
     let payday: Date;
     if (n.getTime() < payA.getTime()) {
       const prevMonth = new Date(year, month - 1, 1);
-      payday = startOfDay(
-        new Date(prevMonth.getFullYear(), prevMonth.getMonth(), dayB)
-      );
+      payday = startOfDay(new Date(prevMonth.getFullYear(), prevMonth.getMonth(), dayB));
     } else if (n.getTime() < payB.getTime()) payday = payA;
     else payday = payB;
 
@@ -273,9 +265,7 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
     if (payday.getDate() === dayA) nextPayday = payB;
     else {
       const nextMonth = new Date(payday.getFullYear(), payday.getMonth() + 1, 1);
-      nextPayday = startOfDay(
-        new Date(nextMonth.getFullYear(), nextMonth.getMonth(), dayA)
-      );
+      nextPayday = startOfDay(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), dayA));
     }
 
     const end = addDays(nextPayday, -1);
@@ -293,16 +283,12 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
   let payday: Date;
   if (n.getTime() < payThis.getTime()) {
     const prevMonth = new Date(year, month - 1, 1);
-    payday = startOfDay(
-      new Date(prevMonth.getFullYear(), prevMonth.getMonth(), day)
-    );
+    payday = startOfDay(new Date(prevMonth.getFullYear(), prevMonth.getMonth(), day));
   } else payday = payThis;
 
   const start = payday;
   const nextMonth = new Date(payday.getFullYear(), payday.getMonth() + 1, 1);
-  const nextPayday = startOfDay(
-    new Date(nextMonth.getFullYear(), nextMonth.getMonth(), day)
-  );
+  const nextPayday = startOfDay(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), day));
   const end = addDays(nextPayday, -1);
 
   const id = cycleIdFromDate("monthly", payday);
@@ -319,8 +305,7 @@ export const getCycleWithOffset = (settings: Settings, now: Date, offset: number
     return c;
   }
 
-  for (let i = 0; i < Math.abs(offset); i++)
-    c = getCurrentCycle(settings, addDays(c.start, -1));
+  for (let i = 0; i < Math.abs(offset); i++) c = getCurrentCycle(settings, addDays(c.start, -1));
   return c;
 };
 
@@ -360,8 +345,7 @@ export const buildChecklistForCycle = (
     const dueB = dueDateForMonth(card.dueDay || 1, cycle.end);
 
     const inThisCycle =
-      isBetweenInclusive(dueA, cycle.start, cycle.end) ||
-      isBetweenInclusive(dueB, cycle.start, cycle.end);
+      isBetweenInclusive(dueA, cycle.start, cycle.end) || isBetweenInclusive(dueB, cycle.start, cycle.end);
 
     if (inThisCycle && (card.minDue || 0) > 0) {
       items.push({
@@ -380,8 +364,7 @@ export const buildChecklistForCycle = (
     const dueB = dueDateForMonth(m.dueDay || 1, cycle.end);
 
     const inThisCycle =
-      isBetweenInclusive(dueA, cycle.start, cycle.end) ||
-      isBetweenInclusive(dueB, cycle.start, cycle.end);
+      isBetweenInclusive(dueA, cycle.start, cycle.end) || isBetweenInclusive(dueB, cycle.start, cycle.end);
 
     if (inThisCycle && (m.amount || 0) > 0) {
       items.push({
@@ -489,9 +472,7 @@ function migrateSettings(raw: any): Settings {
   s.creditCards = (s.creditCards || []).map((c: any) => {
     const totalDue = Number(c.totalDue ?? 0) || 0;
     const bal =
-      Number(c.balance ?? undefined) != null
-        ? Number(c.balance) || 0
-        : totalDue; // default to totalDue if balance missing
+      Number(c.balance ?? undefined) != null ? Number(c.balance) || 0 : totalDue; // default to totalDue if balance missing
 
     return {
       id: String(c.id ?? `cc_${Date.now()}`),
@@ -546,24 +527,15 @@ export function usePayflow() {
   const nowRef = useRef(new Date());
   const now = nowRef.current;
 
-  const viewCycle = useMemo(
-    () => getCycleWithOffset(settings, now, cycleOffset),
-    [settings, cycleOffset, now]
-  );
+  const viewCycle = useMemo(() => getCycleWithOffset(settings, now, cycleOffset), [settings, cycleOffset, now]);
 
   const activeChecked = checkedByCycle[viewCycle.id] ?? {};
   const unexpected = unexpectedByCycle[viewCycle.id] ?? [];
   const payments = cardPaymentsByCycle[viewCycle.id] ?? [];
 
-  const unexpectedTotal = useMemo(
-    () => unexpected.reduce((sum, x) => sum + (x.amount || 0), 0),
-    [unexpected]
-  );
+  const unexpectedTotal = useMemo(() => unexpected.reduce((sum, x) => sum + (x.amount || 0), 0), [unexpected]);
 
-  const manualPaymentsTotal = useMemo(
-    () => payments.reduce((sum, p) => sum + (p.amount || 0), 0),
-    [payments]
-  );
+  const manualPaymentsTotal = useMemo(() => payments.reduce((sum, p) => sum + (p.amount || 0), 0), [payments]);
 
   const items = useMemo(
     () => buildChecklistForCycle(settings, viewCycle, unexpectedTotal, manualPaymentsTotal),
@@ -579,10 +551,7 @@ export function usePayflow() {
 
   const totals = useMemo(() => {
     const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
-    const done = items.reduce(
-      (sum, i) => (activeChecked[i.id]?.checked ? sum + (i.amount || 0) : sum),
-      0
-    );
+    const done = items.reduce((sum, i) => (activeChecked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
 
     const itemsTotal = items.length;
     const itemsDone = items.filter((i) => activeChecked[i.id]?.checked).length;
@@ -591,27 +560,47 @@ export function usePayflow() {
     return { planned, done, itemsTotal, itemsDone, pct };
   }, [items, activeChecked]);
 
-  // load
+  // ✅ shared loader (used by initial load AND reload())
+  const loadFromStorage = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Persisted;
+
+        if (parsed?.settings) setSettings(migrateSettings(parsed.settings));
+        else setSettings(defaultSettings());
+
+        setCheckedByCycle(parsed?.checkedByCycle ?? {});
+        setAppliedItemReductions(parsed?.appliedItemReductions ?? {});
+        setUnexpectedByCycle(parsed?.unexpectedByCycle ?? {});
+        setCardPaymentsByCycle(parsed?.cardPaymentsByCycle ?? {});
+        setHasCompletedSetup(!!parsed?.hasCompletedSetup);
+      } else {
+        // nothing saved yet
+        setSettings(defaultSettings());
+        setCheckedByCycle({});
+        setAppliedItemReductions({});
+        setUnexpectedByCycle({});
+        setCardPaymentsByCycle({});
+        setHasCompletedSetup(false);
+      }
+    } catch {
+      // ignore -> keep current
+    }
+  }, []);
+
+  // ✅ public reload() so Settings can force-refresh the Dashboard immediately
+  const reload = useCallback(async () => {
+    await loadFromStorage();
+  }, [loadFromStorage]);
+
+  // initial load
   useEffect(() => {
     (async () => {
-      try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw) as Persisted;
-          if (parsed?.settings) setSettings(migrateSettings(parsed.settings));
-          if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
-          if (parsed?.appliedItemReductions) setAppliedItemReductions(parsed.appliedItemReductions);
-          if (parsed?.unexpectedByCycle) setUnexpectedByCycle(parsed.unexpectedByCycle);
-          if (parsed?.cardPaymentsByCycle) setCardPaymentsByCycle(parsed.cardPaymentsByCycle);
-          setHasCompletedSetup(!!parsed?.hasCompletedSetup);
-        }
-      } catch {
-        // ignore -> defaults
-      } finally {
-        setLoaded(true);
-      }
+      await loadFromStorage();
+      setLoaded(true);
     })();
-  }, []);
+  }, [loadFromStorage]);
 
   // save
   useEffect(() => {
@@ -777,9 +766,7 @@ export function usePayflow() {
       setSettings((s) => ({
         ...s,
         creditCards: (s.creditCards || []).map((c) =>
-          c.id === payment.cardId
-            ? { ...c, balance: (c.balance || 0) + (payment.amount || 0) }
-            : c
+          c.id === payment.cardId ? { ...c, balance: (c.balance || 0) + (payment.amount || 0) } : c
         ),
       }));
 
@@ -823,6 +810,9 @@ export function usePayflow() {
 
     settings,
     setSettings,
+
+    // ✅ NEW: allow SettingsScreen (and others) to refresh immediately
+    reload,
 
     cycleOffset,
     setCycleOffset,

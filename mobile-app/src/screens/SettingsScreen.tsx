@@ -77,6 +77,8 @@ export default function SettingsScreen() {
     settings,
     setSettings,
     resetEverything,
+    // ✅ NEW: reload after save so Dashboard updates immediately
+    reload,
   } = usePayflow();
 
   const mode: "setup" | "normal" = hasCompletedSetup ? "normal" : "setup";
@@ -257,7 +259,7 @@ export default function SettingsScreen() {
 
   /* ---------------- Save ---------------- */
 
-  function save() {
+  async function save() {
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
@@ -291,7 +293,14 @@ export default function SettingsScreen() {
     if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
+    // ✅ Save to provider/state (and storage inside the provider)
     setSettings(nextLocal);
+
+    // ✅ Force an immediate in-memory refresh so Dashboard updates without restart
+    // If reload is not defined in your hook yet, paste usePayflow.ts and I’ll add it.
+    if (typeof reload === "function") {
+      await reload();
+    }
 
     if (mode === "setup") {
       setHasCompletedSetup(true);
@@ -741,9 +750,7 @@ export default function SettingsScreen() {
                             backgroundColor: "rgba(255,255,255,0.05)",
                           }}
                         >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                            Day {dueDay} of the month
-                          </Text>
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
                           <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
                             Tap to pick a date (we only store the day number)
                           </Text>

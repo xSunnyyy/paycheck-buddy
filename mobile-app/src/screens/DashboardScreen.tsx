@@ -218,9 +218,17 @@ export default function DashboardScreen() {
   const [payCardId, setPayCardId] = useState<string>("");
   const [payAmount, setPayAmount] = useState("");
 
+  // ✅ payments are collapsed by default
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
+
   const payableCards: CreditCard[] = useMemo(
     () => (settings.creditCards || []).filter((c) => (c.balance || 0) > 0),
     [settings.creditCards]
+  );
+
+  const totalCardBalance = useMemo(
+    () => payableCards.reduce((sum, c) => sum + (c.balance || 0), 0),
+    [payableCards]
   );
 
   // default selected card
@@ -341,115 +349,179 @@ export default function DashboardScreen() {
               </Card>
             </View>
 
-            {/* ✅ Manual Credit Card Payment */}
+            {/* ✅ Credit Cards (ABOVE payments) */}
             <View style={{ marginTop: 12 }}>
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
+                  <Chip>{fmtMoney(totalCardBalance)} total</Chip>
+                </View>
+
                 <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Add any extra payment you made. It reduces your paycheck remainder and lowers the card balance.
+                  Paid-off cards are hidden automatically.
                 </Text>
 
                 <Divider />
 
                 {payableCards.length === 0 ? (
                   <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                    No active card balances. Paid-off cards are hidden automatically.
+                    No active card balances right now.
                   </Text>
                 ) : (
-                  <>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
-
-                    <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
-                      {payableCards.map((c) => (
-                        <Pressable
-                          key={c.id}
-                          onPress={() => setPayCardId(c.id)}
-                          style={{
-                            paddingVertical: 8,
-                            paddingHorizontal: 10,
-                            borderRadius: 999,
-                            borderWidth: 1,
-                            borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                            backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                          }}
-                        >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                            {c.name || "Card"} • {fmtMoney(c.balance || 0)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-
-                    <Field
-                      label="Amount paid"
-                      value={payAmount}
-                      onChangeText={setPayAmount}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      onFocusScrollToInput={scrollToInput}
-                      clearOnFocus
-                    />
-
-                    <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                      <TextBtn
-                        label="Add payment"
-                        kind="green"
-                        disabled={!payCardId || Number(payAmount) <= 0}
-                        onPress={() => {
-                          const ok = addCardPayment(payCardId, payAmount);
-                          if (!ok) return;
-                          setPayAmount("");
-                          Keyboard.dismiss();
+                  <View style={{ gap: 10 }}>
+                    {payableCards.map((c) => (
+                      <View
+                        key={c.id}
+                        style={{
+                          padding: 12,
+                          borderRadius: 16,
+                          borderWidth: 1,
+                          borderColor: "rgba(255,255,255,0.09)",
+                          backgroundColor: "rgba(255,255,255,0.03)",
                         }}
-                      />
-                      <TextBtn label="Clear" onPress={() => setPayAmount("")} />
-                    </View>
-                  </>
-                )}
+                      >
+                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                              {c.name || "Card"}
+                            </Text>
+                            <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                              Balance: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(c.balance || 0)}</Text>
+                            </Text>
+                          </View>
 
-                {/* list payments this cycle */}
-                {payments.length > 0 ? (
+                          <View style={{ alignItems: "flex-end", justifyContent: "center" }}>
+                            <Chip>{fmtMoney(c.balance || 0)}</Chip>
+                          </View>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </Card>
+            </View>
+
+            {/* ✅ Manual Credit Card Payments (BELOW cards) + collapsed by default */}
+            <View style={{ marginTop: 12 }}>
+              <Card>
+                <Pressable
+                  onPress={() => setPaymentsOpen((v) => !v)}
+                  style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
+                >
+                  <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
+                  <Chip>{paymentsOpen ? "Hide" : "Show"}</Chip>
+                </Pressable>
+
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Add any extra payment you made. It reduces your paycheck remainder and lowers the card balance.
+                </Text>
+
+                {!paymentsOpen ? null : (
                   <>
                     <Divider />
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
-                    <View style={{ marginTop: 10, gap: 10 }}>
-                      {payments.map((p) => {
-                        const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
-                        return (
-                          <View
-                            key={p.id}
-                            style={{
-                              padding: 12,
-                              borderRadius: 16,
-                              borderWidth: 1,
-                              borderColor: "rgba(255,255,255,0.09)",
-                              backgroundColor: "rgba(255,255,255,0.03)",
+
+                    {payableCards.length === 0 ? (
+                      <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                        No active card balances. Paid-off cards are hidden automatically.
+                      </Text>
+                    ) : (
+                      <>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
+
+                        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                          {payableCards.map((c) => (
+                            <Pressable
+                              key={c.id}
+                              onPress={() => setPayCardId(c.id)}
+                              style={{
+                                paddingVertical: 8,
+                                paddingHorizontal: 10,
+                                borderRadius: 999,
+                                borderWidth: 1,
+                                borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                                backgroundColor:
+                                  payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                              }}
+                            >
+                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                {c.name || "Card"} • {fmtMoney(c.balance || 0)}
+                              </Text>
+                            </Pressable>
+                          ))}
+                        </View>
+
+                        <Field
+                          label="Amount paid"
+                          value={payAmount}
+                          onChangeText={setPayAmount}
+                          keyboardType="numeric"
+                          placeholder="0"
+                          onFocusScrollToInput={scrollToInput}
+                          clearOnFocus
+                        />
+
+                        <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                          <TextBtn
+                            label="Add payment"
+                            kind="green"
+                            disabled={!payCardId || Number(payAmount) <= 0}
+                            onPress={() => {
+                              const ok = addCardPayment(payCardId, payAmount);
+                              if (!ok) return;
+                              setPayAmount("");
+                              Keyboard.dismiss();
                             }}
-                          >
-                            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
-                              <View style={{ flex: 1 }}>
-                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                  {card?.name || "Credit Card"}
-                                </Text>
-                                <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                  {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
-                                </Text>
+                          />
+                          <TextBtn label="Clear" onPress={() => setPayAmount("")} />
+                        </View>
+                      </>
+                    )}
+
+                    {/* list payments this cycle */}
+                    {payments.length > 0 ? (
+                      <>
+                        <Divider />
+                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
+                        <View style={{ marginTop: 10, gap: 10 }}>
+                          {payments.map((p) => {
+                            const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
+                            return (
+                              <View
+                                key={p.id}
+                                style={{
+                                  padding: 12,
+                                  borderRadius: 16,
+                                  borderWidth: 1,
+                                  borderColor: "rgba(255,255,255,0.09)",
+                                  backgroundColor: "rgba(255,255,255,0.03)",
+                                }}
+                              >
+                                <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                      {card?.name || "Credit Card"}
+                                    </Text>
+                                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                      {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
+                                    </Text>
+                                  </View>
+                                  <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                    <Chip>{fmtMoney(p.amount)}</Chip>
+                                    <TextBtn
+                                      label="Remove"
+                                      kind="red"
+                                      onPress={() => removeCardPayment(viewCycle.id, p.id)}
+                                    />
+                                  </View>
+                                </View>
                               </View>
-                              <View style={{ alignItems: "flex-end", gap: 8 }}>
-                                <Chip>{fmtMoney(p.amount)}</Chip>
-                                <TextBtn
-                                  label="Remove"
-                                  kind="red"
-                                  onPress={() => removeCardPayment(viewCycle.id, p.id)}
-                                />
-                              </View>
-                            </View>
-                          </View>
-                        );
-                      })}
-                    </View>
+                            );
+                          })}
+                        </View>
+                      </>
+                    ) : null}
                   </>
-                ) : null}
+                )}
               </Card>
             </View>
 
