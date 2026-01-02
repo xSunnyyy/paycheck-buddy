@@ -222,7 +222,7 @@ export default function DashboardScreen() {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, padding: 16, paddingTop: 10 + insets.top }}>
+        <View style={{ flex: 1, padding: 16, paddingTop: 10 }}>
           <Card>
             <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome</Text>
             <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -263,7 +263,7 @@ export default function DashboardScreen() {
         >
           <ScrollView
             ref={scrollRef}
-            style={{ marginTop: 12 }}
+            style={{ marginTop: 0 }}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{
               paddingTop: 2,

@@ -54,7 +54,7 @@ export default function HistoryScreen() {
         edges={["top", "left", "right"]}
       >
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, padding: 16, paddingTop: 12 + insets.top }}>
+        <View style={{ flex: 1, padding: 16, paddingTop: 12 }}>
           <Card>
             <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>History</Text>
             <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -104,7 +104,7 @@ export default function HistoryScreen() {
           style={{ flex: 1, backgroundColor: COLORS.bg }}
           contentContainerStyle={{
             padding: 16,
-            paddingTop: 12 + insets.top,
+            paddingTop: 12,
             paddingBottom: 24 + insets.bottom,
           }}
           showsVerticalScrollIndicator={false}
@@ -271,7 +271,7 @@ export default function HistoryScreen() {
         style={{ flex: 1, backgroundColor: COLORS.bg }}
         contentContainerStyle={{
           padding: 16,
-          paddingTop: 12 + insets.top,
+          paddingTop: 12,
           paddingBottom: 24 + insets.bottom,
         }}
         showsVerticalScrollIndicator={false}

@@ -332,7 +332,7 @@ export default function SettingsScreen() {
           showsVerticalScrollIndicator={false}
           contentContainerStyle={{ paddingBottom: 280 }}
         >
-          <View style={{ gap: 12, paddingTop: Math.max(0, insets.top) }}>
+          <<View style={{ gap: 12 }}>
             {/* Pay schedule */}
             <Card>
               <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
