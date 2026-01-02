@@ -10,7 +10,6 @@ import {
   Platform,
   StatusBar,
   KeyboardAvoidingView,
-  Keyboard,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -22,18 +21,24 @@ import {
 
 /**
  * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
- * ✅ Changes in this version:
- * - Reliable "focus scrolls above keyboard" behavior using measureLayout + keyboard height
- * - Renamed Pay-per allocations -> "Paycheck Distributions"
- * - Monthly section now supports MULTIPLE items (add/remove like bills/allocations)
- * - Checklist builds monthly items as multiple entries (still under Monthly category)
- * - All saved on device
+ * ✅ Includes:
+ * - First-time setup gate (hasCompletedSetup)
+ * - New STORAGE_KEY so old data won't persist
+ * - Calendar picker for anchor payday (weekly/biweekly) — DOES NOT auto-open
+ * - Force date selection during setup for weekly/biweekly (blocks Finish Setup)
+ * - Dynamic allocations list (add/remove pay-per items)
+ * - Scroll inputs into view on focus (setup + settings)
+ * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
+ * ✅ Added:
+ * - Unexpected Expenses (per-cycle), collapsible, on Checklist screen ONLY
+ * - Unexpected totals reduce the remaining pay-cycle budget, which reduces Debt Paydown
+ * - Unexpected section placed at the BOTTOM of checklist screen (after all categories, incl. Debt)
  */
 
 /** -------------------- Types -------------------- */
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
-type Category = "Bills" | "Monthly" | "Distributions" | "Debt";
+type Category = "Bills" | "Monthly" | "Allocations" | "Debt";
 
 type Bill = {
   id: string;
@@ -42,13 +47,7 @@ type Bill = {
   dueDay: number; // 1–31
 };
 
-type Distribution = {
-  id: string;
-  label: string;
-  amount: number;
-};
-
-type MonthlyItem = {
+type Allocation = {
   id: string;
   label: string;
   amount: number;
@@ -72,11 +71,12 @@ type Settings = {
 
   bills: Bill[];
 
-  // ✅ Monthly now supports multiple items
-  monthlyItems: MonthlyItem[];
+  // Monthly single item
+  monthlyLabel: string;
+  monthlyAmount: number;
 
-  // ✅ Renamed allocations -> distributions
-  distributions: Distribution[];
+  // Dynamic per-pay allocations
+  allocations: Allocation[];
 
   // One total debt
   debtRemaining: number;
@@ -92,9 +92,18 @@ type Cycle = {
   payday: Date;
 };
 
+// ✅ Unexpected expense item (stored per-cycle)
+type UnexpectedExpense = {
+  id: string;
+  label: string;
+  amount: number;
+  atISO: string;
+};
+
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v5"; // bump key due to schema change
+// ✅ NEW KEY so prior data won't carry over
+const STORAGE_KEY = "pb_mobile_v4_ux";
 
 type Persisted = {
   hasCompletedSetup: boolean;
@@ -102,13 +111,16 @@ type Persisted = {
   checkedByCycle: Record<string, CheckedState>;
   appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
+
+  // ✅ NEW
+  unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
 };
 
 const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
   payAmount: 0,
 
-  // force pick during setup (weekly/biweekly)
+  // ✅ force pick during setup (weekly/biweekly)
   anchorISO: "",
 
   twiceMonthlyDay1: 1,
@@ -117,12 +129,13 @@ const defaultSettings = (): Settings => ({
 
   bills: [],
 
-  // ✅ multiple monthly items
-  monthlyItems: [],
+  monthlyLabel: "Monthly Expense",
+  monthlyAmount: 0,
 
-  // ✅ distributions start empty
-  distributions: [],
+  // ✅ dynamic allocations start empty
+  allocations: [],
 
+  // ✅ start at 0 as requested
   debtRemaining: 0,
 });
 
@@ -215,6 +228,7 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
     const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
 
+    // Safety fallback (should never hit if setup was completed properly)
     const anchorISO = hasValidAnchorDate(settings.anchorISO)
       ? settings.anchorISO
       : new Date().toISOString();
@@ -319,7 +333,11 @@ type ChecklistItem = {
   notes?: string;
 };
 
-function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem[] {
+function buildChecklistForCycle(
+  settings: Settings,
+  cycle: Cycle,
+  unexpectedTotal: number = 0
+): ChecklistItem[] {
   const items: ChecklistItem[] = [];
 
   // Bills included if due date falls in cycle range
@@ -342,29 +360,26 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     }
   }
 
-  // ✅ Multiple monthly items
-  for (const m of settings.monthlyItems || []) {
-    const amt = m.amount || 0;
-    if (amt > 0) {
-      items.push({
-        id: `monthly_${m.id}`,
-        label: `Monthly: ${m.label || "Expense"}`,
-        amount: amt,
-        category: "Monthly",
-        notes: "Monthly item",
-      });
-    }
+  // Monthly single item
+  if ((settings.monthlyAmount || 0) > 0) {
+    items.push({
+      id: "monthly_single",
+      label: `Monthly: ${settings.monthlyLabel || "Expense"}`,
+      amount: settings.monthlyAmount || 0,
+      category: "Monthly",
+      notes: "One monthly item",
+    });
   }
 
-  // ✅ Paycheck Distributions
-  for (const d of settings.distributions || []) {
-    const amt = d.amount || 0;
+  // Dynamic allocations
+  for (const a of settings.allocations || []) {
+    const amt = a.amount || 0;
     if (amt > 0) {
       items.push({
-        id: `dist_${d.id}`,
-        label: d.label || "Distribution",
+        id: `alloc_${a.id}`,
+        label: a.label || "Allocation",
         amount: amt,
-        category: "Distributions",
+        category: "Allocations",
         notes: "Repeat each pay cycle",
       });
     }
@@ -383,7 +398,8 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     .filter((i) => i.id !== "debt_paydown")
     .reduce((sum, i) => sum + (i.amount || 0), 0);
 
-  const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal);
+  // ✅ subtract unexpected expenses from remainder
+  const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal - (unexpectedTotal || 0));
 
   return items.map((i) => (i.id === "debt_paydown" ? { ...i, amount: debtPay } : i));
 }
@@ -499,9 +515,9 @@ function TextBtn({
 }
 
 /**
- * ✅ Field that reliably scrolls above keyboard:
- * - measures the actual input position in the ScrollView content
- * - uses keyboard height to calculate a target scrollY so the input sits above the keyboard
+ * Field that:
+ * - captures its Y position via onLayout
+ * - scrolls to itself when focused (so typing is visible)
  */
 function Field({
   label,
@@ -509,9 +525,7 @@ function Field({
   onChangeText,
   keyboardType = "default",
   placeholder,
-  scrollRef,
-  contentWrapRef,
-  keyboardHeight,
+  onFocusScrollToY,
   borderColorOverride,
 }: {
   label: string;
@@ -519,52 +533,29 @@ function Field({
   onChangeText: (s: string) => void;
   keyboardType?: "default" | "numeric";
   placeholder?: string;
-  scrollRef?: React.RefObject<ScrollView>;
-  contentWrapRef?: React.RefObject<View>;
-  keyboardHeight?: number;
+  onFocusScrollToY?: (y: number) => void;
   borderColorOverride?: string;
 }) {
-  const inputRef = useRef<TextInput>(null);
-
-  const scrollIntoView = () => {
-    if (!scrollRef?.current || !contentWrapRef?.current) return;
-    const kh = keyboardHeight ?? 0;
-
-    // measure input relative to the ScrollView content wrapper
-    inputRef.current?.measureLayout(
-      // @ts-ignore - native ref
-      contentWrapRef.current,
-      (x, y, w, h) => {
-        // Keep some breathing room above keyboard
-        const margin = 18;
-
-        // available height inside scroll area = screen minus keyboard, but we don't know exact screen height here,
-        // so we use a conservative approach:
-        // Scroll so the input top lands at (currentScroll + y - targetTop),
-        // where targetTop is a safe spot (we set ~120px from top) and add keyboard margin.
-        // BUT more reliable: scroll so input bottom is visible above keyboard:
-        // We'll just scroll to y - 20; keyboard avoiding view handles remaining shift,
-        // plus we add extra offset based on keyboard height.
-        const extra = Math.min(220, Math.max(0, kh - 40));
-        const targetY = Math.max(0, y - 20 + extra);
-
-        scrollRef.current?.scrollTo({ y: targetY, animated: true });
-      },
-      () => {}
-    );
-  };
+  const yRef = useRef<number>(0);
 
   return (
-    <View style={{ marginTop: 10 }}>
+    <View
+      style={{ marginTop: 10 }}
+      onLayout={(e) => {
+        yRef.current = e.nativeEvent.layout.y;
+      }}
+    >
       <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
       <TextInput
-        ref={inputRef}
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
-        onFocus={scrollIntoView}
+        onFocus={() => {
+          // scroll a bit above the field so it isn't under the keyboard
+          if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 20));
+        }}
         style={{
           marginTop: 6,
           borderWidth: 1,
@@ -605,26 +596,29 @@ function AppInner() {
   const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
   const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
 
-  // ✅ track keyboard height (helps Android)
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  useEffect(() => {
-    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+  // ✅ Unexpected per-cycle storage
+  const [unexpectedByCycle, setUnexpectedByCycle] = useState<
+    Record<string, UnexpectedExpense[]>
+  >({});
 
-    const s = Keyboard.addListener(showEvt, (e) => {
-      setKeyboardHeight(e.endCoordinates?.height ?? 0);
-    });
-    const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
-    return () => {
-      s.remove();
-      h.remove();
-    };
-  }, []);
+  // ✅ Unexpected UI state (Checklist screen only)
+  const [unexpectedOpen, setUnexpectedOpen] = useState(false);
+  const [uxLabel, setUxLabel] = useState("");
+  const [uxAmount, setUxAmount] = useState("");
 
   const cycle = useMemo(() => getCurrentCycle(settings, new Date()), [settings]);
   const activeChecked = checkedByCycle[cycle.id] ?? {};
 
-  const items = useMemo(() => buildChecklistForCycle(settings, cycle), [settings, cycle]);
+  const unexpected = unexpectedByCycle[cycle.id] ?? [];
+  const unexpectedTotal = useMemo(
+    () => unexpected.reduce((sum, x) => sum + (x.amount || 0), 0),
+    [unexpected]
+  );
+
+  const items = useMemo(
+    () => buildChecklistForCycle(settings, cycle, unexpectedTotal),
+    [settings, cycle, unexpectedTotal]
+  );
   const grouped = useMemo(() => groupByCategory(items), [items]);
 
   const totals = useMemo(() => {
@@ -639,47 +633,51 @@ function AppInner() {
     return { planned, done, itemsTotal, itemsDone, pct };
   }, [items, activeChecked]);
 
-  // Load from storage (with migration support)
+  function addUnexpected() {
+    const amt = safeParseNumber(uxAmount);
+    if (amt <= 0) return;
+
+    const item: UnexpectedExpense = {
+      id: `ux_${Date.now()}`,
+      label: (uxLabel || "Unexpected expense").trim(),
+      amount: amt,
+      atISO: new Date().toISOString(),
+    };
+
+    setUnexpectedByCycle((prev) => {
+      const next = { ...prev };
+      const arr = [...(next[cycle.id] ?? [])];
+      arr.unshift(item);
+      next[cycle.id] = arr;
+      return next;
+    });
+
+    setUxLabel("");
+    setUxAmount("");
+
+    // ✅ close after adding (as requested: user must open manually)
+    setUnexpectedOpen(false);
+  }
+
+  function removeUnexpected(id: string) {
+    setUnexpectedByCycle((prev) => {
+      const next = { ...prev };
+      next[cycle.id] = (next[cycle.id] ?? []).filter((x) => x.id !== id);
+      return next;
+    });
+  }
+
+  // Load from storage
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
-          const parsed = JSON.parse(raw) as Partial<Persisted>;
-
-          if (parsed?.settings) {
-            // ✅ migrate old schema if needed
-            const sAny: any = parsed.settings;
-
-            const migrated: Settings = {
-              ...defaultSettings(),
-              ...sAny,
-
-              // old fields -> new fields
-              distributions: Array.isArray(sAny.distributions)
-                ? sAny.distributions
-                : Array.isArray(sAny.allocations)
-                ? sAny.allocations
-                : [],
-
-              monthlyItems: Array.isArray(sAny.monthlyItems)
-                ? sAny.monthlyItems
-                : sAny.monthlyAmount && sAny.monthlyAmount > 0
-                ? [
-                    {
-                      id: `monthly_${Date.now()}`,
-                      label: sAny.monthlyLabel || "Monthly Expense",
-                      amount: sAny.monthlyAmount || 0,
-                    },
-                  ]
-                : [],
-            };
-
-            setSettings(migrated);
-          }
-
+          const parsed = JSON.parse(raw) as Persisted;
+          if (parsed?.settings) setSettings(parsed.settings);
           if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
           if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
+          if (parsed?.unexpectedByCycle) setUnexpectedByCycle(parsed.unexpectedByCycle);
           setHasCompletedSetup(!!parsed?.hasCompletedSetup);
         } else {
           setHasCompletedSetup(false);
@@ -700,9 +698,18 @@ function AppInner() {
       checkedByCycle,
       appliedDebtCycles,
       activeCycleId: cycle.id,
+      unexpectedByCycle,
     };
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
-  }, [loaded, hasCompletedSetup, settings, checkedByCycle, appliedDebtCycles, cycle.id]);
+  }, [
+    loaded,
+    hasCompletedSetup,
+    settings,
+    checkedByCycle,
+    appliedDebtCycles,
+    unexpectedByCycle,
+    cycle.id,
+  ]);
 
   function toggleItem(id: string) {
     setCheckedByCycle((prev) => {
@@ -749,6 +756,7 @@ function AppInner() {
           setSettings(fresh);
           setCheckedByCycle({});
           setAppliedDebtCycles({});
+          setUnexpectedByCycle({});
           setHasCompletedSetup(false);
           setScreen("checklist");
           try {
@@ -778,8 +786,8 @@ function AppInner() {
 
         <KeyboardAvoidingView
           style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
         >
           <View
             style={{
@@ -812,7 +820,6 @@ function AppInner() {
                   setHasCompletedSetup(true);
                   setScreen("checklist");
                 }}
-                keyboardHeight={keyboardHeight}
               />
 
               <View style={{ marginTop: 12 }}>
@@ -832,8 +839,7 @@ function AppInner() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View
           style={{
@@ -975,6 +981,133 @@ function AppInner() {
                   })}
                 </View>
 
+                {/* ✅ Unexpected Expense at the BOTTOM (after Debt/category cards) */}
+                <View style={{ marginTop: 12 }}>
+                  <Card>
+                    <Pressable
+                      onPress={() => setUnexpectedOpen((v) => !v)}
+                      style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected Expense</Text>
+                        <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                          Tap to {unexpectedOpen ? "close" : "open"} • This cycle:{" "}
+                          <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
+                        </Text>
+                      </View>
+
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 18 }}>
+                        {unexpectedOpen ? "▾" : "▸"}
+                      </Text>
+                    </Pressable>
+
+                    {unexpectedOpen ? (
+                      <>
+                        <Divider />
+
+                        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                          Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
+                        </Text>
+
+                        <View style={{ marginTop: 10 }}>
+                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Label</Text>
+                          <TextInput
+                            value={uxLabel}
+                            onChangeText={setUxLabel}
+                            placeholder="Car repair"
+                            placeholderTextColor="rgba(185,193,204,0.45)"
+                            style={{
+                              marginTop: 6,
+                              borderWidth: 1,
+                              borderColor: COLORS.border,
+                              borderRadius: 14,
+                              paddingVertical: Platform.OS === "ios" ? 12 : 10,
+                              paddingHorizontal: 12,
+                              color: COLORS.textStrong,
+                              backgroundColor: "rgba(255,255,255,0.05)",
+                              fontWeight: "800",
+                            }}
+                          />
+                        </View>
+
+                        <View style={{ marginTop: 10 }}>
+                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Amount</Text>
+                          <TextInput
+                            value={uxAmount}
+                            onChangeText={setUxAmount}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            placeholderTextColor="rgba(185,193,204,0.45)"
+                            style={{
+                              marginTop: 6,
+                              borderWidth: 1,
+                              borderColor: COLORS.border,
+                              borderRadius: 14,
+                              paddingVertical: Platform.OS === "ios" ? 12 : 10,
+                              paddingHorizontal: 12,
+                              color: COLORS.textStrong,
+                              backgroundColor: "rgba(255,255,255,0.05)",
+                              fontWeight: "800",
+                            }}
+                          />
+                        </View>
+
+                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                          <TextBtn
+                            label="Add unexpected expense"
+                            onPress={addUnexpected}
+                            kind="green"
+                            disabled={safeParseNumber(uxAmount) <= 0}
+                          />
+                        </View>
+
+                        {unexpected.length > 0 ? (
+                          <>
+                            <Divider />
+                            <View style={{ gap: 10 }}>
+                              {unexpected.map((x) => (
+                                <View
+                                  key={x.id}
+                                  style={{
+                                    padding: 12,
+                                    borderRadius: 16,
+                                    borderWidth: 1,
+                                    borderColor: COLORS.borderSoft,
+                                    backgroundColor: "rgba(255,255,255,0.03)",
+                                  }}
+                                >
+                                  <View
+                                    style={{
+                                      flexDirection: "row",
+                                      justifyContent: "space-between",
+                                      alignItems: "center",
+                                      gap: 10,
+                                    }}
+                                  >
+                                    <View style={{ flex: 1 }}>
+                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                        {x.label}
+                                      </Text>
+                                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                        {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
+                                      </Text>
+                                    </View>
+
+                                    <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                      <Chip>{fmtMoney(x.amount)}</Chip>
+                                      <TextBtn label="Remove" onPress={() => removeUnexpected(x.id)} kind="red" />
+                                    </View>
+                                  </View>
+                                </View>
+                              ))}
+                            </View>
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+                  </Card>
+                </View>
+
                 <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
                   Offline • Saved on-device
                 </Text>
@@ -986,7 +1119,6 @@ function AppInner() {
                 onChange={setSettings}
                 onBack={() => setScreen("checklist")}
                 onFinishSetup={() => {}}
-                keyboardHeight={keyboardHeight}
               />
             )}
           </ScrollView>
@@ -1004,17 +1136,14 @@ function SettingsScreen({
   onChange,
   onBack,
   onFinishSetup,
-  keyboardHeight,
 }: {
   mode: "setup" | "normal";
   settings: Settings;
   onChange: (s: Settings) => void;
   onBack: () => void;
   onFinishSetup: () => void;
-  keyboardHeight: number;
 }) {
   const scrollRef = useRef<ScrollView>(null);
-  const contentWrapRef = useRef<View>(null);
 
   const [local, setLocal] = useState<Settings>(settings);
 
@@ -1023,7 +1152,14 @@ function SettingsScreen({
 
   useEffect(() => setLocal(settings), [settings]);
 
+  const onFocusScrollToY = (y: number) => {
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({ y, animated: true });
+    }, 60);
+  };
+
   function save() {
+    // Force anchor selection in setup for weekly/biweekly
     if (
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
@@ -1082,49 +1218,25 @@ function SettingsScreen({
     }));
   }
 
-  // ✅ Distributions (renamed allocations)
-  function addDistribution() {
-    const id = `dist_${Date.now()}`;
+  function addAllocation() {
+    const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      distributions: [...(s.distributions || []), { id, label: "New Distribution", amount: 0 }],
+      allocations: [...(s.allocations || []), { id, label: "New Allocation", amount: 0 }],
     }));
   }
 
-  function updateDistribution(id: string, patch: Partial<Distribution>) {
+  function updateAllocation(id: string, patch: Partial<Allocation>) {
     setLocal((s) => ({
       ...s,
-      distributions: (s.distributions || []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      allocations: (s.allocations || []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
     }));
   }
 
-  function removeDistribution(id: string) {
+  function removeAllocation(id: string) {
     setLocal((s) => ({
       ...s,
-      distributions: (s.distributions || []).filter((a) => a.id !== id),
-    }));
-  }
-
-  // ✅ Monthly items (multiple)
-  function addMonthlyItem() {
-    const id = `mon_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: [...(s.monthlyItems || []), { id, label: "New Monthly Item", amount: 0 }],
-    }));
-  }
-
-  function updateMonthlyItem(id: string, patch: Partial<MonthlyItem>) {
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: (s.monthlyItems || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
-    }));
-  }
-
-  function removeMonthlyItem(id: string) {
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: (s.monthlyItems || []).filter((m) => m.id !== id),
+      allocations: (s.allocations || []).filter((a) => a.id !== id),
     }));
   }
 
@@ -1145,8 +1257,7 @@ function SettingsScreen({
       contentContainerStyle={{ paddingBottom: 30 }}
       showsVerticalScrollIndicator={false}
     >
-      {/* ✅ wrapper used for measureLayout */}
-      <View ref={contentWrapRef} style={{ gap: 12 }}>
+      <View style={{ gap: 12 }}>
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
             {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
@@ -1174,15 +1285,15 @@ function SettingsScreen({
             onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
             keyboardType="numeric"
             placeholder="0"
-            scrollRef={scrollRef}
-            contentWrapRef={contentWrapRef}
-            keyboardHeight={keyboardHeight}
+            onFocusScrollToY={onFocusScrollToY}
           />
 
-          {/* Anchor payday calendar */}
+          {/* ✅ Anchor payday calendar (no auto-open) */}
           {shouldShowAnchor ? (
             <>
-              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Anchor payday</Text>
+              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
+                Anchor payday
+              </Text>
 
               <Pressable
                 onPress={() => setShowAnchorPicker(true)}
@@ -1215,6 +1326,7 @@ function SettingsScreen({
                   mode="date"
                   display={Platform.OS === "ios" ? "spinner" : "default"}
                   onChange={(event, selectedDate) => {
+                    // Android closes on selection/cancel
                     if (Platform.OS !== "ios") setShowAnchorPicker(false);
                     if (!selectedDate) return;
 
@@ -1242,9 +1354,7 @@ function SettingsScreen({
                 }
                 keyboardType="numeric"
                 placeholder="1"
-                scrollRef={scrollRef}
-                contentWrapRef={contentWrapRef}
-                keyboardHeight={keyboardHeight}
+                onFocusScrollToY={onFocusScrollToY}
               />
               <Field
                 label="Twice-monthly payday #2 (1–28)"
@@ -1254,9 +1364,7 @@ function SettingsScreen({
                 }
                 keyboardType="numeric"
                 placeholder="15"
-                scrollRef={scrollRef}
-                contentWrapRef={contentWrapRef}
-                keyboardHeight={keyboardHeight}
+                onFocusScrollToY={onFocusScrollToY}
               />
             </>
           ) : null}
@@ -1270,9 +1378,7 @@ function SettingsScreen({
               }
               keyboardType="numeric"
               placeholder="1"
-              scrollRef={scrollRef}
-              contentWrapRef={contentWrapRef}
-              keyboardHeight={keyboardHeight}
+              onFocusScrollToY={onFocusScrollToY}
             />
           ) : null}
         </Card>
@@ -1291,15 +1397,13 @@ function SettingsScreen({
             onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
             keyboardType="numeric"
             placeholder="0"
-            scrollRef={scrollRef}
-            contentWrapRef={contentWrapRef}
-            keyboardHeight={keyboardHeight}
+            onFocusScrollToY={onFocusScrollToY}
           />
         </Card>
 
-        {/* ✅ Paycheck Distributions */}
+        {/* ✅ Dynamic allocations */}
         <Card>
-          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay-per allocations</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
             Add or remove items that repeat every pay cycle (e.g., Savings, Investing, Fuel).
           </Text>
@@ -1307,9 +1411,9 @@ function SettingsScreen({
           <Divider />
 
           <View style={{ gap: 12 }}>
-            {(local.distributions || []).map((d) => (
+            {(local.allocations || []).map((a) => (
               <View
-                key={d.id}
+                key={a.id}
                 style={{
                   borderWidth: 1,
                   borderColor: COLORS.borderSoft,
@@ -1318,89 +1422,57 @@ function SettingsScreen({
                   backgroundColor: "rgba(255,255,255,0.03)",
                 }}
               >
-                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Distribution</Text>
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Allocation</Text>
 
                 <Field
                   label="Label"
-                  value={d.label}
-                  onChangeText={(s) => updateDistribution(d.id, { label: s })}
+                  value={a.label}
+                  onChangeText={(s) => updateAllocation(a.id, { label: s })}
                   placeholder="Savings"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
+                  onFocusScrollToY={onFocusScrollToY}
                 />
                 <Field
                   label="Amount"
-                  value={String(d.amount)}
-                  onChangeText={(s) => updateDistribution(d.id, { amount: safeParseNumber(s) })}
+                  value={String(a.amount)}
+                  onChangeText={(s) => updateAllocation(a.id, { amount: safeParseNumber(s) })}
                   keyboardType="numeric"
                   placeholder="0"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
+                  onFocusScrollToY={onFocusScrollToY}
                 />
 
                 <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                  <TextBtn label="Remove distribution" onPress={() => removeDistribution(d.id)} kind="red" />
+                  <TextBtn label="Remove allocation" onPress={() => removeAllocation(a.id)} kind="red" />
                 </View>
               </View>
             ))}
 
-            <TextBtn label="Add distribution" onPress={addDistribution} />
+            <TextBtn label="Add allocation" onPress={addAllocation} />
           </View>
         </Card>
 
-        {/* ✅ Monthly (multiple items) */}
         <Card>
-          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly items</Text>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-            Add multiple monthly items (each shows up under Monthly in the checklist).
+            Still shows as ONE item in the checklist.
           </Text>
 
           <Divider />
 
-          <View style={{ gap: 12 }}>
-            {(local.monthlyItems || []).map((m) => (
-              <View
-                key={m.id}
-                style={{
-                  borderWidth: 1,
-                  borderColor: COLORS.borderSoft,
-                  borderRadius: 16,
-                  padding: 12,
-                  backgroundColor: "rgba(255,255,255,0.03)",
-                }}
-              >
-                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Item</Text>
-
-                <Field
-                  label="Label (e.g., Rent / Groceries / Insurance)"
-                  value={m.label}
-                  onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                  placeholder="Rent"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
-                />
-                <Field
-                  label="Amount"
-                  value={String(m.amount)}
-                  onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
-                  keyboardType="numeric"
-                  placeholder="0"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
-                />
-
-                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                  <TextBtn label="Remove monthly item" onPress={() => removeMonthlyItem(m.id)} kind="red" />
-                </View>
-              </View>
-            ))}
-
-            <TextBtn label="Add monthly item" onPress={addMonthlyItem} />
-          </View>
+          <Field
+            label="Monthly label (e.g., Rent / Groceries / Other)"
+            value={local.monthlyLabel}
+            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyLabel: s }))}
+            placeholder="Monthly Expense"
+            onFocusScrollToY={onFocusScrollToY}
+          />
+          <Field
+            label="Monthly amount"
+            value={String(local.monthlyAmount)}
+            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyAmount: safeParseNumber(s) }))}
+            keyboardType="numeric"
+            placeholder="0"
+            onFocusScrollToY={onFocusScrollToY}
+          />
         </Card>
 
         <Card>
@@ -1430,9 +1502,7 @@ function SettingsScreen({
                   value={b.name}
                   onChangeText={(s) => updateBill(b.id, { name: s })}
                   placeholder="Verizon"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
+                  onFocusScrollToY={onFocusScrollToY}
                 />
                 <Field
                   label="Amount"
@@ -1440,9 +1510,7 @@ function SettingsScreen({
                   onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
                   keyboardType="numeric"
                   placeholder="0"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
+                  onFocusScrollToY={onFocusScrollToY}
                 />
                 <Field
                   label="Due day (1–31)"
@@ -1450,9 +1518,7 @@ function SettingsScreen({
                   onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
                   keyboardType="numeric"
                   placeholder="1"
-                  scrollRef={scrollRef}
-                  contentWrapRef={contentWrapRef}
-                  keyboardHeight={keyboardHeight}
+                  onFocusScrollToY={onFocusScrollToY}
                 />
 
                 <View style={{ marginTop: 10, alignItems: "flex-start" }}>
