@@ -1,35 +1,38 @@
-import { Tabs } from 'expo-router';
-import React from 'react';
+import React from "react";
+import { Platform } from "react-native";
+import { withLayoutContext } from "expo-router";
+import { createMaterialTopTabNavigator } from "@react-navigation/material-top-tabs";
+import { Fonts } from "@/constants/theme";
 
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+const { Navigator } = createMaterialTopTabNavigator();
+const MaterialTopTabs = withLayoutContext(Navigator);
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
+export default function TabsLayout() {
   return (
-    <Tabs
+    <MaterialTopTabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="explore"
-        options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
-        }}
-      />
-    </Tabs>
+        swipeEnabled: true,
+        animationEnabled: true,
+        lazy: true,
+
+        tabBarScrollEnabled: false,
+        tabBarIndicatorStyle: { height: 3, backgroundColor: "#FFFFFF" },
+        tabBarStyle: {
+          backgroundColor: "#070A10",
+          paddingTop: Platform.OS === "android" ? 10 : 0,
+        },
+        tabBarLabelStyle: {
+          textTransform: "none",
+          fontFamily: Fonts?.rounded ?? undefined,
+          fontSize: 14,
+        },
+        tabBarActiveTintColor: "#FFFFFF",
+        tabBarInactiveTintColor: "rgba(255,255,255,0.6)",
+      }}
+    >
+      <MaterialTopTabs.Screen name="index" options={{ title: "Dashboard" }} />
+      <MaterialTopTabs.Screen name="history" options={{ title: "History" }} />
+      <MaterialTopTabs.Screen name="settings" options={{ title: "Settings" }} />
+    </MaterialTopTabs>
   );
 }
