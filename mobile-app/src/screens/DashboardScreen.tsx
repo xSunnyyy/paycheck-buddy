@@ -17,13 +17,11 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
-import {
-  usePayflow,
-  fmtMoney,
-  formatDate,
-  displayCategory,
-  type CreditCard,
-} from "@/src/state/usePayflow";
+// ✅ IMPORTANT: use the Provider hook (single store instance)
+import { usePayflow } from "@/src/state/PayFlowProvider";
+
+// helpers + types still come from the store file
+import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
@@ -395,7 +393,7 @@ export default function DashboardScreen() {
                       </View>
                     </Card>
 
-                    {/* ✅ Credit Card Payments under Credit Cards */}
+                    {/* Credit Card Payments under Credit Cards */}
                     {isCreditCards ? (
                       <Card>
                         <View
@@ -575,11 +573,7 @@ export default function DashboardScreen() {
                               </View>
                               <View style={{ alignItems: "flex-end", gap: 8 }}>
                                 <Chip>{fmtMoney(x.amount)}</Chip>
-                                <TextBtn
-                                  label="Remove"
-                                  kind="red"
-                                  onPress={() => removeUnexpected(viewCycle.id, x.id)}
-                                />
+                                <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
                               </View>
                             </View>
                           </View>
@@ -638,7 +632,7 @@ export default function DashboardScreen() {
               clearOnFocus
             />
 
-            {/* ✅ NEW: Card selector for unexpected */}
+            {/* Card selector for unexpected */}
             <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Paid with</Text>
             <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
               <Pressable

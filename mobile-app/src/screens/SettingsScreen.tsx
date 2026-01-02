@@ -18,8 +18,11 @@ import { useRouter } from "expo-router";
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
+// ✅ IMPORTANT: use the Provider hook (single store instance)
+import { usePayflow } from "@/src/state/PayFlowProvider";
+
+// helpers + types still come from the store file
 import {
-  usePayflow,
   safeParseNumber,
   type Settings,
   type CreditCard,
@@ -77,8 +80,6 @@ export default function SettingsScreen() {
     settings,
     setSettings,
     resetEverything,
-    // ✅ NEW: reload after save so Dashboard updates immediately
-    reload,
   } = usePayflow();
 
   const mode: "setup" | "normal" = hasCompletedSetup ? "normal" : "setup";
@@ -259,7 +260,7 @@ export default function SettingsScreen() {
 
   /* ---------------- Save ---------------- */
 
-  async function save() {
+  function save() {
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
@@ -293,14 +294,8 @@ export default function SettingsScreen() {
     if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
-    // ✅ Save to provider/state (and storage inside the provider)
+    // ✅ Updates the single shared store (Dashboard updates immediately)
     setSettings(nextLocal);
-
-    // ✅ Force an immediate in-memory refresh so Dashboard updates without restart
-    // If reload is not defined in your hook yet, paste usePayflow.ts and I’ll add it.
-    if (typeof reload === "function") {
-      await reload();
-    }
 
     if (mode === "setup") {
       setHasCompletedSetup(true);
@@ -310,6 +305,8 @@ export default function SettingsScreen() {
       Alert.alert("Saved", "Setup complete. You can now use Dashboard + History.");
     } else {
       Alert.alert("Saved", "Settings saved to device.");
+      // Optional: bounce back to dashboard automatically
+      // requestAnimationFrame(() => router.replace("/(tabs)/index"));
     }
   }
 
@@ -790,11 +787,7 @@ export default function SettingsScreen() {
 
               {/* Actions */}
               <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                <TextBtn
-                  label={mode === "setup" ? "Finish setup" : "Save settings"}
-                  onPress={save}
-                  kind="green"
-                />
+                <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
               </View>
 
               <View style={{ marginTop: 12 }}>
