@@ -21,12 +21,12 @@ import {
 } from "react-native-safe-area-context";
 
 /**
- * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
+ * PAYFLOW — OFFLINE ANDROID APP (Expo)
  * ✅ Includes:
  * - First-time setup gate (hasCompletedSetup)
  * - Payday (weekly/biweekly anchor)
  * - Paycheck Distributions (per-pay)
- * - Personal Spending (per-pay) ✅ NEW
+ * - Personal Spending (per-pay)
  * - Monthly Expenses list (multiple) with dueDay + cycle assignment like bills
  * - Scroll focused inputs above keyboard (Settings + Dashboard + Unexpected)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
@@ -37,7 +37,11 @@ import {
  * ✅ UX:
  * - Due day input allows deleting/typing (no forced "1")
  * - New Bill/Monthly/Distribution/Personal start with EMPTY name
- * - Top nav centered: Dashboard / History / Settings (no app name)
+ * - Top nav centered: Dashboard / History / Settings
+ *
+ * ✅ Requested changes:
+ * - App name shown in setup renamed to PayFlow
+ * - Remove "Reset ALL" from Dashboard summary (keep only in Settings bottom)
  */
 
 /** -------------------- Types -------------------- */
@@ -73,24 +77,19 @@ type MonthlyItem = {
 
 type Settings = {
   payFrequency: PayFrequency;
-
   payAmount: number;
 
-  // weekly/biweekly anchor payday (renamed in UI to "Payday")
+  // weekly/biweekly payday (anchor)
   anchorISO: string;
 
   twiceMonthlyDay1: number; // 1–28
   twiceMonthlyDay2: number; // 1–28
-
   monthlyPayDay: number; // 1–28
 
   bills: Bill[];
-
   monthlyItems: MonthlyItem[];
 
   allocations: Allocation[];
-
-  // ✅ NEW
   personalSpending: PersonalSpendingItem[];
 
   debtRemaining: number;
@@ -115,7 +114,7 @@ type UnexpectedExpense = {
 
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v7";
+const STORAGE_KEY = "payflow_mobile_v1";
 
 type Persisted = {
   hasCompletedSetup: boolean;
@@ -309,11 +308,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   return { id, label, start, end, payday };
 }
 
-/**
- * offset = 0 current cycle
- * offset = +1 next cycle
- * offset = -1 previous cycle
- */
 function getCycleWithOffset(settings: Settings, now: Date, offset: number): Cycle {
   let c = getCurrentCycle(settings, now);
   if (offset === 0) return c;
@@ -383,7 +377,6 @@ function buildChecklistForCycle(
 ): ChecklistItem[] {
   const items: ChecklistItem[] = [];
 
-  // Bills included if due date falls in cycle range
   for (const bill of settings.bills || []) {
     const dueA = dueDateForMonth(bill.dueDay || 1, cycle.start);
     const dueB = dueDateForMonth(bill.dueDay || 1, cycle.end);
@@ -403,7 +396,6 @@ function buildChecklistForCycle(
     }
   }
 
-  // Monthly items behave like bills now (dueDay -> appears in correct cycle)
   for (const m of settings.monthlyItems || []) {
     const dueA = dueDateForMonth(m.dueDay || 1, cycle.start);
     const dueB = dueDateForMonth(m.dueDay || 1, cycle.end);
@@ -423,7 +415,6 @@ function buildChecklistForCycle(
     }
   }
 
-  // Paycheck Distributions (internal category Allocations)
   for (const a of settings.allocations || []) {
     const amt = a.amount || 0;
     if (amt > 0) {
@@ -437,7 +428,6 @@ function buildChecklistForCycle(
     }
   }
 
-  // ✅ NEW: Personal Spending (per-pay)
   for (const p of settings.personalSpending || []) {
     const amt = p.amount || 0;
     if (amt > 0) {
@@ -451,7 +441,6 @@ function buildChecklistForCycle(
     }
   }
 
-  // Debt remainder
   items.push({
     id: "debt_paydown",
     label: "Debt Paydown",
@@ -588,9 +577,6 @@ function TextBtn({
   );
 }
 
-/**
- * Field that scrolls itself above the keyboard using ScrollView's native helper
- */
 function Field({
   label,
   value,
@@ -660,7 +646,6 @@ function migrateSettings(raw: any): Settings {
   if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
   if (!Array.isArray(s.personalSpending)) s.personalSpending = [];
 
-  // Back-compat: old single monthly fields -> monthlyItems list
   const oldLabel = raw?.monthlyLabel;
   const oldAmount = raw?.monthlyAmount;
   if (
@@ -681,7 +666,6 @@ function migrateSettings(raw: any): Settings {
     }
   }
 
-  // Ensure monthly items have dueDay
   s.monthlyItems = (s.monthlyItems || []).map((m: any) => ({
     id: String(m.id ?? `monthly_${Date.now()}`),
     label: String(m.label ?? ""),
@@ -689,7 +673,6 @@ function migrateSettings(raw: any): Settings {
     dueDay: clamp(Number(m.dueDay ?? 1) || 1, 1, 31),
   }));
 
-  // Ensure bills dueDay ok
   s.bills = (s.bills || []).map((b: any) => ({
     id: String(b.id ?? `bill_${Date.now()}`),
     name: String(b.name ?? ""),
@@ -697,14 +680,12 @@ function migrateSettings(raw: any): Settings {
     dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
   }));
 
-  // Ensure allocations ok
   s.allocations = (s.allocations || []).map((a: any) => ({
     id: String(a.id ?? `alloc_${Date.now()}`),
     label: String(a.label ?? ""),
     amount: Number(a.amount ?? 0) || 0,
   }));
 
-  // ✅ Ensure personal spending ok
   s.personalSpending = (s.personalSpending || []).map((p: any) => ({
     id: String(p.id ?? `ps_${Date.now()}`),
     label: String(p.label ?? ""),
@@ -731,10 +712,8 @@ function AppInner() {
     {}
   );
 
-  // cycle navigation on dashboard
   const [cycleOffset, setCycleOffset] = useState(0);
 
-  // Dashboard ScrollView ref (keyboard scrolling)
   const dashboardScrollRef = useRef<ScrollView>(null);
 
   const scrollDashboardToInput = (inputRef: React.RefObject<TextInput>) => {
@@ -752,13 +731,13 @@ function AppInner() {
     });
   };
 
-  // Unexpected UI
   const [unexpectedOpen, setUnexpectedOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
 
-  // History navigation
-  const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(null);
+  const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(
+    null
+  );
 
   const now = new Date();
 
@@ -829,7 +808,6 @@ function AppInner() {
     });
   }
 
-  // Load from storage
   useEffect(() => {
     (async () => {
       try {
@@ -852,7 +830,6 @@ function AppInner() {
     })();
   }, []);
 
-  // Save to storage
   useEffect(() => {
     if (!loaded) return;
 
@@ -887,7 +864,6 @@ function AppInner() {
     });
   }
 
-  // Debt auto-decrease when debt_paydown is checked, once per cycle (for whichever cycle user is viewing)
   useEffect(() => {
     if (!loaded) return;
     if (!hasCompletedSetup) return;
@@ -934,7 +910,6 @@ function AppInner() {
     ]);
   }
 
-  // History (last 10 cycles)
   const last10Cycles = useMemo(() => {
     if (!hasCompletedSetup) return [];
     return getLastNCycles(settings, new Date(), 10);
@@ -965,7 +940,6 @@ function AppInner() {
     );
   }
 
-  // Setup gate
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -986,7 +960,7 @@ function AppInner() {
             }}
           >
             <View style={{ paddingTop: Math.max(0, insets.top) }}>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to Paycheck Buddy</Text>
+              <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to PayFlow</Text>
               <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
                 Let’s set up your pay schedule and expenses.
               </Text>
@@ -1008,11 +982,8 @@ function AppInner() {
                   setScreen("dashboard");
                   setCycleOffset(0);
                 }}
+                onResetAll={resetEverything}
               />
-
-              <View style={{ marginTop: 12 }}>
-                <TextBtn label="Reset ALL (start over)" onPress={resetEverything} kind="red" />
-              </View>
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
@@ -1020,7 +991,6 @@ function AppInner() {
     );
   }
 
-  // Normal app UI
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
@@ -1039,7 +1009,7 @@ function AppInner() {
             backgroundColor: COLORS.bg,
           }}
         >
-          {/* Top nav (centered, no app name) */}
+          {/* Top nav */}
           <View style={{ paddingTop: Math.max(0, insets.top), alignItems: "center" }}>
             <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
               <TextBtn
@@ -1078,7 +1048,6 @@ function AppInner() {
           >
             {screen === "dashboard" ? (
               <>
-                {/* Cycle navigation */}
                 <Card>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                     <TextBtn label="Prev" onPress={() => setCycleOffset((o) => o - 1)} disabled={false} />
@@ -1104,7 +1073,6 @@ function AppInner() {
                   ) : null}
                 </Card>
 
-                {/* Summary */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <View style={{ gap: 10 }}>
@@ -1113,7 +1081,6 @@ function AppInner() {
                         <Chip>{fmtMoney(settings.payAmount)}</Chip>
                       </View>
 
-                      {/* ✅ NEW: Personal spending total right below Pay amount */}
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                         <Text style={{ color: COLORS.muted, ...TYPE.label }}>Personal spending (per pay)</Text>
                         <Chip>{fmtMoney(personalSpendingTotal)}</Chip>
@@ -1146,14 +1113,9 @@ function AppInner() {
                         </Text>
                       </Text>
                     </View>
-
-                    <Divider />
-
-                    <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
                   </Card>
                 </View>
 
-                {/* Dashboard checklist */}
                 <View style={{ marginTop: 12, gap: 12 }}>
                   {grouped.map(([cat, catItems]) => {
                     const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
@@ -1207,7 +1169,6 @@ function AppInner() {
                   })}
                 </View>
 
-                {/* Unexpected Expense at the bottom */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <Pressable
@@ -1662,6 +1623,7 @@ function AppInner() {
                 onChange={(s) => setSettings(s)}
                 onBack={() => setScreen("dashboard")}
                 onFinishSetup={() => {}}
+                onResetAll={resetEverything}
               />
             )}
           </ScrollView>
@@ -1679,12 +1641,14 @@ function SettingsScreen({
   onChange,
   onBack,
   onFinishSetup,
+  onResetAll,
 }: {
   mode: "setup" | "normal";
   settings: Settings;
   onChange: (s: Settings) => void;
   onBack: () => void;
   onFinishSetup: () => void;
+  onResetAll: () => void;
 }) {
   const scrollRef = useRef<ScrollView>(null);
   const [local, setLocal] = useState<Settings>(settings);
@@ -1692,7 +1656,6 @@ function SettingsScreen({
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
   const [anchorError, setAnchorError] = useState(false);
 
-  // Fix "can't delete 1" for dueDay by keeping due text separately until save
   const [billDueText, setBillDueText] = useState<Record<string, string>>({});
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
 
@@ -1719,7 +1682,6 @@ function SettingsScreen({
   };
 
   function save() {
-    // Force payday selection in setup for weekly/biweekly
     if (
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
@@ -1731,7 +1693,6 @@ function SettingsScreen({
       }
     }
 
-    // Apply due-day text -> numbers (and validate)
     const bills: Bill[] = (local.bills || []).map((b) => {
       const t = billDueText[b.id] ?? String(b.dueDay ?? 1);
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
@@ -1771,7 +1732,6 @@ function SettingsScreen({
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
-  // Bills
   function updateBill(billId: string, patch: Partial<Bill>) {
     setLocal((s) => ({
       ...s,
@@ -1800,7 +1760,6 @@ function SettingsScreen({
     });
   }
 
-  // Paycheck Distributions (allocations)
   function addDistribution() {
     const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
@@ -1823,7 +1782,6 @@ function SettingsScreen({
     }));
   }
 
-  // ✅ Personal Spending (works like distributions)
   function addPersonalSpending() {
     const id = `ps_${Date.now()}`;
     setLocal((s) => ({
@@ -1846,7 +1804,6 @@ function SettingsScreen({
     }));
   }
 
-  // Monthly items
   function addMonthlyItem() {
     const id = `monthly_${Date.now()}`;
     setLocal((s) => ({
@@ -1927,7 +1884,6 @@ function SettingsScreen({
 
           {shouldShowAnchor ? (
             <>
-              {/* ✅ Renamed from Anchor Payday -> Payday */}
               <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Payday</Text>
 
               <Pressable
@@ -2029,7 +1985,6 @@ function SettingsScreen({
           />
         </Card>
 
-        {/* Paycheck Distributions */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -2078,7 +2033,6 @@ function SettingsScreen({
           </View>
         </Card>
 
-        {/* ✅ NEW: Personal Spending (like distributions) */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Personal Spending</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -2127,7 +2081,6 @@ function SettingsScreen({
           </View>
         </Card>
 
-        {/* Monthly Expenses (multiple) */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -2167,7 +2120,6 @@ function SettingsScreen({
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
 
-                {/* due day text input (no forced clamp while typing) */}
                 <Field
                   label="Due day (1–31)"
                   value={monthlyDueText[m.id] ?? String(m.dueDay ?? 1)}
@@ -2187,7 +2139,6 @@ function SettingsScreen({
           </View>
         </Card>
 
-        {/* Bills */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -2227,7 +2178,6 @@ function SettingsScreen({
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
 
-                {/* due day text input (fixes typing) */}
                 <Field
                   label="Due day (1–31)"
                   value={billDueText[b.id] ?? String(b.dueDay ?? 1)}
@@ -2250,6 +2200,11 @@ function SettingsScreen({
         <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
           <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
           {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
+        </View>
+
+        {/* ✅ Reset ALL ONLY here at the bottom of Settings */}
+        <View style={{ marginTop: 12 }}>
+          <TextBtn label="Reset ALL (start over)" onPress={onResetAll} kind="red" />
         </View>
 
         <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
