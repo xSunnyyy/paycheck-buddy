@@ -4,14 +4,14 @@
     "slug": "paycheck-buddy-mobile",
     "version": "1.0.0",
 
-    "icon": "./assets/icon.png",
+    "icon": "mobile-app/assets/icons/icon.png",
 
     "platforms": ["ios", "android", "web"],
 
     "android": {
       "package": "com.sunny.paycheckbuddy",
       "adaptiveIcon": {
-        "foregroundImage": "/workspaces/paycheck-buddy/mobile-app/assets/icons/icon.png",
+        "foregroundImage": "mobile-app/assets/icons/icon.png",
         "backgroundColor": "#070A10"
       }
     },
