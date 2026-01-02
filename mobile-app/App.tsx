@@ -23,16 +23,21 @@ import {
  * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
  * ✅ Includes:
  * - First-time setup gate (hasCompletedSetup)
- * - New STORAGE_KEY so old data won't persist
  * - Calendar picker for anchor payday (weekly/biweekly) — DOES NOT auto-open
  * - Force date selection during setup for weekly/biweekly (blocks Finish Setup)
  * - Dynamic allocations list (add/remove pay-per items)
  * - Scroll inputs into view on focus (setup + settings)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
+ *
  * ✅ Added:
- * - Unexpected Expenses (per-cycle), collapsible, on Checklist screen ONLY
- * - Unexpected totals reduce the remaining pay-cycle budget, which reduces Debt Paydown
- * - Unexpected section placed at the BOTTOM of checklist screen (after all categories, incl. Debt)
+ * - Unexpected Expenses (per-cycle), collapsible, on Checklist screen ONLY (BOTTOM)
+ * - Unexpected totals reduce remainder -> recalculates Debt Paydown
+ * - Summary shows Unexpected total
+ *
+ * ✅ NEW:
+ * - History tab
+ * - Last 10 cycles list
+ * - Cycle detail view: goals met, unexpected, bills paid/missed, missed items
  */
 
 /** -------------------- Types -------------------- */
@@ -71,7 +76,7 @@ type Settings = {
 
   bills: Bill[];
 
-  // Monthly single item
+  // Monthly single item (kept as-is from your current file)
   monthlyLabel: string;
   monthlyAmount: number;
 
@@ -92,7 +97,7 @@ type Cycle = {
   payday: Date;
 };
 
-// ✅ Unexpected expense item (stored per-cycle)
+// Unexpected expense item (stored per-cycle)
 type UnexpectedExpense = {
   id: string;
   label: string;
@@ -102,8 +107,7 @@ type UnexpectedExpense = {
 
 /** -------------------- Storage -------------------- */
 
-// ✅ NEW KEY so prior data won't carry over
-const STORAGE_KEY = "pb_mobile_v4_ux";
+const STORAGE_KEY = "pb_mobile_v4_ux_hist";
 
 type Persisted = {
   hasCompletedSetup: boolean;
@@ -112,30 +116,20 @@ type Persisted = {
   appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
 
-  // ✅ NEW
   unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
 };
 
 const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
   payAmount: 0,
-
-  // ✅ force pick during setup (weekly/biweekly)
   anchorISO: "",
-
   twiceMonthlyDay1: 1,
   twiceMonthlyDay2: 15,
   monthlyPayDay: 1,
-
   bills: [],
-
   monthlyLabel: "Monthly Expense",
   monthlyAmount: 0,
-
-  // ✅ dynamic allocations start empty
   allocations: [],
-
-  // ✅ start at 0 as requested
   debtRemaining: 0,
 });
 
@@ -204,6 +198,7 @@ const COLORS = {
   glassB: "rgba(255,255,255,0.045)",
   greenSoft: "rgba(34,197,94,0.16)",
   redBorder: "rgba(248,113,113,0.55)",
+  amberSoft: "rgba(251,191,36,0.15)",
 };
 
 const TYPE = {
@@ -228,7 +223,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
     const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
 
-    // Safety fallback (should never hit if setup was completed properly)
     const anchorISO = hasValidAnchorDate(settings.anchorISO)
       ? settings.anchorISO
       : new Date().toISOString();
@@ -306,6 +300,32 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   const id = cycleIdFromDate("monthly", payday);
   const label = `Month cycle ${formatDate(payday)}`;
   return { id, label, start, end, payday };
+}
+
+/**
+ * Build the last N cycles by repeatedly stepping "one day before the previous cycle start"
+ * and asking getCurrentCycle() what cycle that date belongs to.
+ *
+ * Works for weekly/biweekly/twice-monthly/monthly.
+ */
+function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
+  const cycles: Cycle[] = [];
+  const seen = new Set<string>();
+
+  let cur = getCurrentCycle(settings, now);
+  while (cycles.length < n && !seen.has(cur.id)) {
+    cycles.push(cur);
+    seen.add(cur.id);
+
+    const probe = addDays(cur.start, -1);
+    const next = getCurrentCycle(settings, probe);
+    cur = next;
+
+    // hard safety break
+    if (cycles.length > n + 5) break;
+  }
+
+  return cycles;
 }
 
 /** -------------------- Bills due date -> cycle assignment -------------------- */
@@ -398,7 +418,7 @@ function buildChecklistForCycle(
     .filter((i) => i.id !== "debt_paydown")
     .reduce((sum, i) => sum + (i.amount || 0), 0);
 
-  // ✅ subtract unexpected expenses from remainder
+  // subtract unexpected expenses from remainder
   const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal - (unexpectedTotal || 0));
 
   return items.map((i) => (i.id === "debt_paydown" ? { ...i, amount: debtPay } : i));
@@ -553,7 +573,6 @@ function Field({
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
         onFocus={() => {
-          // scroll a bit above the field so it isn't under the keyboard
           if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 20));
         }}
         style={{
@@ -574,7 +593,7 @@ function Field({
 
 /** -------------------- App -------------------- */
 
-type Screen = "checklist" | "settings";
+type Screen = "checklist" | "settings" | "history" | "history_detail";
 
 export default function App() {
   return (
@@ -596,17 +615,20 @@ function AppInner() {
   const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
   const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
 
-  // ✅ Unexpected per-cycle storage
   const [unexpectedByCycle, setUnexpectedByCycle] = useState<
     Record<string, UnexpectedExpense[]>
   >({});
 
-  // ✅ Unexpected UI state (Checklist screen only)
+  // Unexpected UI (Checklist only)
   const [unexpectedOpen, setUnexpectedOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
 
-  const cycle = useMemo(() => getCurrentCycle(settings, new Date()), [settings]);
+  // History navigation
+  const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(null);
+
+  const now = new Date();
+  const cycle = useMemo(() => getCurrentCycle(settings, now), [settings, now]);
   const activeChecked = checkedByCycle[cycle.id] ?? {};
 
   const unexpected = unexpectedByCycle[cycle.id] ?? [];
@@ -655,7 +677,7 @@ function AppInner() {
     setUxLabel("");
     setUxAmount("");
 
-    // ✅ close after adding (as requested: user must open manually)
+    // close after adding so user must open manually each time
     setUnexpectedOpen(false);
   }
 
@@ -758,6 +780,7 @@ function AppInner() {
           setAppliedDebtCycles({});
           setUnexpectedByCycle({});
           setHasCompletedSetup(false);
+          setHistorySelectedCycleId(null);
           setScreen("checklist");
           try {
             await AsyncStorage.removeItem(STORAGE_KEY);
@@ -766,6 +789,33 @@ function AppInner() {
       },
     ]);
   }
+
+  // History data (last 10 cycles)
+  const last10Cycles = useMemo(() => {
+    if (!hasCompletedSetup) return [];
+    return getLastNCycles(settings, new Date(), 10);
+  }, [settings, hasCompletedSetup]);
+
+  // Helpers for history summaries
+  function getCycleUnexpectedTotal(cycleId: string) {
+    const arr = unexpectedByCycle[cycleId] ?? [];
+    return arr.reduce((sum, x) => sum + (x.amount || 0), 0);
+  }
+
+  function getCycleChecked(cycleId: string) {
+    return checkedByCycle[cycleId] ?? {};
+  }
+
+  function getCycleItems(c: Cycle) {
+    const uxTot = getCycleUnexpectedTotal(c.id);
+    return buildChecklistForCycle(settings, c, uxTot);
+  }
+
+  // History detail selected cycle object
+  const historySelectedCycle = useMemo(() => {
+    if (!historySelectedCycleId) return null;
+    return last10Cycles.find((c) => c.id === historySelectedCycleId) ?? null;
+  }, [historySelectedCycleId, last10Cycles]);
 
   if (!loaded) {
     return (
@@ -865,12 +915,26 @@ function AppInner() {
             <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
               <TextBtn
                 label="Checklist"
-                onPress={() => setScreen("checklist")}
+                onPress={() => {
+                  setHistorySelectedCycleId(null);
+                  setScreen("checklist");
+                }}
                 kind={screen === "checklist" ? "green" : "default"}
               />
               <TextBtn
+                label="History"
+                onPress={() => {
+                  setHistorySelectedCycleId(null);
+                  setScreen("history");
+                }}
+                kind={screen === "history" || screen === "history_detail" ? "green" : "default"}
+              />
+              <TextBtn
                 label="Settings"
-                onPress={() => setScreen("settings")}
+                onPress={() => {
+                  setHistorySelectedCycleId(null);
+                  setScreen("settings");
+                }}
                 kind={screen === "settings" ? "green" : "default"}
               />
             </View>
@@ -904,14 +968,15 @@ function AppInner() {
                       <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
                     </View>
 
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
-                      <Chip>{fmtMoney(totals.planned)}</Chip>
-                    </View>
-
+                    {/* ✅ Summary add-on for unexpected */}
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
                       <Chip>{fmtMoney(unexpectedTotal)}</Chip>
+                    </View>
+
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                      <Chip>{fmtMoney(totals.planned)}</Chip>
                     </View>
 
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -986,7 +1051,7 @@ function AppInner() {
                   })}
                 </View>
 
-                {/* ✅ Unexpected Expense at the BOTTOM (after Debt/category cards) */}
+                {/* ✅ Unexpected Expense at the BOTTOM */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <Pressable
@@ -1117,6 +1182,346 @@ function AppInner() {
                   Offline • Saved on-device
                 </Text>
               </>
+            ) : screen === "history" ? (
+              <>
+                <Card>
+                  <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>History</Text>
+                  <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                    Last 10 pay cycles. Tap one to view what you paid, missed, and unexpected expenses.
+                  </Text>
+                </Card>
+
+                <View style={{ marginTop: 12, gap: 12 }}>
+                  {last10Cycles.map((c, idx) => {
+                    const uxTot = getCycleUnexpectedTotal(c.id);
+                    const its = buildChecklistForCycle(settings, c, uxTot);
+                    const checked = getCycleChecked(c.id);
+
+                    const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
+                    const done = its.reduce(
+                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+                      0
+                    );
+                    const totalCount = its.length;
+                    const doneCount = its.filter((i) => checked[i.id]?.checked).length;
+                    const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+
+                    const metGoal = pct === 100;
+
+                    return (
+                      <Pressable
+                        key={c.id}
+                        onPress={() => {
+                          setHistorySelectedCycleId(c.id);
+                          setScreen("history_detail");
+                        }}
+                        style={{}}
+                      >
+                        <Card>
+                          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                {idx === 0 ? "Current cycle" : `Cycle #${idx + 1}`} • {formatDate(c.payday)}
+                              </Text>
+                              <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                {c.label}
+                              </Text>
+                            </View>
+
+                            <View style={{ alignItems: "flex-end" }}>
+                              <Text style={{ color: metGoal ? "rgba(34,197,94,0.95)" : "rgba(251,191,36,0.95)", fontWeight: "900" }}>
+                                {metGoal ? "GOAL MET" : "INCOMPLETE"}
+                              </Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 4 }}>
+                                {doneCount}/{totalCount} ({pct}%)
+                              </Text>
+                            </View>
+                          </View>
+
+                          <Divider />
+
+                          <View style={{ gap: 8 }}>
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                              <Chip>{fmtMoney(planned)}</Chip>
+                            </View>
+
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
+                              <Chip>{fmtMoney(done)}</Chip>
+                            </View>
+
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected</Text>
+                              <Chip>{fmtMoney(uxTot)}</Chip>
+                            </View>
+                          </View>
+
+                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                            <TextBtn label="View details" onPress={() => {
+                              setHistorySelectedCycleId(c.id);
+                              setScreen("history_detail");
+                            }} kind="green" />
+                          </View>
+                        </Card>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+                  Offline • Saved on-device
+                </Text>
+              </>
+            ) : screen === "history_detail" ? (
+              <>
+                {historySelectedCycle ? (
+                  (() => {
+                    const c = historySelectedCycle;
+                    const uxArr = unexpectedByCycle[c.id] ?? [];
+                    const uxTot = uxArr.reduce((sum, x) => sum + (x.amount || 0), 0);
+
+                    const its = buildChecklistForCycle(settings, c, uxTot);
+                    const checked = getCycleChecked(c.id);
+
+                    const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
+                    const done = its.reduce(
+                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+                      0
+                    );
+
+                    const totalCount = its.length;
+                    const doneCount = its.filter((i) => checked[i.id]?.checked).length;
+                    const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
+                    const metGoal = pct === 100;
+
+                    const bills = its.filter((i) => i.category === "Bills");
+                    const billsPaid = bills.filter((b) => !!checked[b.id]?.checked);
+                    const billsMissed = bills.filter((b) => !checked[b.id]?.checked);
+
+                    const missedItems = its.filter((i) => !checked[i.id]?.checked);
+
+                    return (
+                      <>
+                        <Card>
+                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Cycle details</Text>
+                          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                            {c.label} • Payday {formatDate(c.payday)}
+                          </Text>
+
+                          <Divider />
+
+                          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                            <Text style={{ color: COLORS.muted, ...TYPE.label }}>Goal</Text>
+                            <Chip>{metGoal ? "Met ✅" : "Not met ⚠️"}</Chip>
+                          </View>
+
+                          <View style={{ marginTop: 10, gap: 8 }}>
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Progress</Text>
+                              <Chip>
+                                {doneCount}/{totalCount} ({pct}%)
+                              </Chip>
+                            </View>
+
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                              <Chip>{fmtMoney(planned)}</Chip>
+                            </View>
+
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
+                              <Chip>{fmtMoney(done)}</Chip>
+                            </View>
+
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected</Text>
+                              <Chip>{fmtMoney(uxTot)}</Chip>
+                            </View>
+                          </View>
+
+                          <Divider />
+
+                          <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                            <TextBtn label="Back to history" onPress={() => {
+                              setHistorySelectedCycleId(null);
+                              setScreen("history");
+                            }} />
+                            <TextBtn label="Checklist" onPress={() => {
+                              setHistorySelectedCycleId(null);
+                              setScreen("checklist");
+                            }} kind="green" />
+                          </View>
+                        </Card>
+
+                        {/* Unexpected expenses list */}
+                        <View style={{ marginTop: 12 }}>
+                          <Card>
+                            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected expenses</Text>
+                              <Chip>{fmtMoney(uxTot)}</Chip>
+                            </View>
+
+                            <Divider />
+
+                            {uxArr.length === 0 ? (
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None recorded for this cycle.</Text>
+                            ) : (
+                              <View style={{ gap: 10 }}>
+                                {uxArr.map((x) => (
+                                  <View
+                                    key={x.id}
+                                    style={{
+                                      padding: 12,
+                                      borderRadius: 16,
+                                      borderWidth: 1,
+                                      borderColor: COLORS.borderSoft,
+                                      backgroundColor: "rgba(255,255,255,0.03)",
+                                    }}
+                                  >
+                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
+                                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                      {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
+                                    </Text>
+                                  </View>
+                                ))}
+                              </View>
+                            )}
+                          </Card>
+                        </View>
+
+                        {/* Bills paid/missed */}
+                        <View style={{ marginTop: 12 }}>
+                          <Card>
+                            <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills</Text>
+                            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                              Paid: {billsPaid.length} • Missed: {billsMissed.length}
+                            </Text>
+
+                            <Divider />
+
+                            {bills.length === 0 ? (
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>No bills fell due in this cycle.</Text>
+                            ) : (
+                              <>
+                                {billsPaid.length > 0 ? (
+                                  <>
+                                    <Text style={{ color: "rgba(34,197,94,0.95)", fontWeight: "900" }}>Paid</Text>
+                                    <View style={{ gap: 10, marginTop: 8 }}>
+                                      {billsPaid.map((b) => (
+                                        <View
+                                          key={b.id}
+                                          style={{
+                                            padding: 12,
+                                            borderRadius: 16,
+                                            borderWidth: 1,
+                                            borderColor: COLORS.borderSoft,
+                                            backgroundColor: COLORS.greenSoft,
+                                          }}
+                                        >
+                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                            ✅ {b.label}
+                                          </Text>
+                                          <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                            {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  </>
+                                ) : null}
+
+                                {billsMissed.length > 0 ? (
+                                  <>
+                                    <Divider />
+                                    <Text style={{ color: "rgba(251,191,36,0.95)", fontWeight: "900" }}>Missed</Text>
+                                    <View style={{ gap: 10, marginTop: 8 }}>
+                                      {billsMissed.map((b) => (
+                                        <View
+                                          key={b.id}
+                                          style={{
+                                            padding: 12,
+                                            borderRadius: 16,
+                                            borderWidth: 1,
+                                            borderColor: COLORS.borderSoft,
+                                            backgroundColor: COLORS.amberSoft,
+                                          }}
+                                        >
+                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                            ⬜ {b.label}
+                                          </Text>
+                                          <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                            {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  </>
+                                ) : null}
+                              </>
+                            )}
+                          </Card>
+                        </View>
+
+                        {/* Missed items (everything) */}
+                        <View style={{ marginTop: 12 }}>
+                          <Card>
+                            <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Missed items</Text>
+                            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                              Anything not checked in that cycle.
+                            </Text>
+
+                            <Divider />
+
+                            {missedItems.length === 0 ? (
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                                None — you completed everything ✅
+                              </Text>
+                            ) : (
+                              <View style={{ gap: 10 }}>
+                                {missedItems.map((i) => (
+                                  <View
+                                    key={i.id}
+                                    style={{
+                                      padding: 12,
+                                      borderRadius: 16,
+                                      borderWidth: 1,
+                                      borderColor: COLORS.borderSoft,
+                                      backgroundColor: COLORS.amberSoft,
+                                    }}
+                                  >
+                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                      ⬜ {i.label}
+                                    </Text>
+                                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                      {fmtMoney(i.amount)} • {i.category}
+                                      {i.notes ? ` • ${i.notes}` : ""}
+                                    </Text>
+                                  </View>
+                                ))}
+                              </View>
+                            )}
+                          </Card>
+                        </View>
+
+                        <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+                          Offline • Saved on-device
+                        </Text>
+                      </>
+                    );
+                  })()
+                ) : (
+                  <Card>
+                    <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Cycle not found</Text>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      Select a cycle again from History.
+                    </Text>
+                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                      <TextBtn label="Back to history" onPress={() => setScreen("history")} kind="green" />
+                    </View>
+                  </Card>
+                )}
+              </>
             ) : (
               <SettingsScreen
                 mode="normal"
@@ -1164,7 +1569,6 @@ function SettingsScreen({
   };
 
   function save() {
-    // Force anchor selection in setup for weekly/biweekly
     if (
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
@@ -1293,7 +1697,7 @@ function SettingsScreen({
             onFocusScrollToY={onFocusScrollToY}
           />
 
-          {/* ✅ Anchor payday calendar (no auto-open) */}
+          {/* Anchor payday calendar (no auto-open) */}
           {shouldShowAnchor ? (
             <>
               <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
@@ -1331,7 +1735,6 @@ function SettingsScreen({
                   mode="date"
                   display={Platform.OS === "ios" ? "spinner" : "default"}
                   onChange={(event, selectedDate) => {
-                    // Android closes on selection/cancel
                     if (Platform.OS !== "ios") setShowAnchorPicker(false);
                     if (!selectedDate) return;
 
@@ -1406,7 +1809,6 @@ function SettingsScreen({
           />
         </Card>
 
-        {/* ✅ Dynamic allocations */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay-per allocations</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
