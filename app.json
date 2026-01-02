@@ -4,6 +4,18 @@
     "slug": "paycheck-buddy",
     "version": "1.0.0",
     "sdkVersion": "51.0.0",
-    "platforms": ["ios", "android", "web"]
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "dceb6f0a-5d35-46c8-83ac-c6a930727815"
+      }
+    },
+    "android": {
+      "package": "com.sunnyalam.paycheckbuddy"
+    }
   }
 }
