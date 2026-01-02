@@ -1,4 +1,5 @@
-import React, { useMemo, useRef, useState } from "react";
+// src/screens/DashboardScreen.tsx
+import React, { useRef, useState } from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -13,8 +14,16 @@ import {
   findNodeHandle,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
-import { usePayflow, fmtMoney, formatDate, displayCategory } from "@/src/state/usePayflow";
+
+import { usePayflow } from "@/src/state/PayFlowProvider";
+import {
+  fmtMoney,
+  formatDate,
+  displayCategory,
+} from "@/src/state/payflowHelpers";
+
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
 function ListRow({
@@ -127,7 +136,14 @@ function BottomSheet({
                 marginBottom: 10,
               }}
             />
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
               <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{title}</Text>
               <TextBtn label="Close" onPress={onClose} />
             </View>
@@ -150,23 +166,27 @@ function BottomSheet({
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const keyboardHeight = useKeyboardHeight();
+
   const {
     loaded,
     hasCompletedSetup,
     setHasCompletedSetup,
+
     settings,
-    setSettings,
     cycleOffset,
     setCycleOffset,
     viewCycle,
     grouped,
     activeChecked,
     totals,
+
     toggleItem,
+
     unexpected,
     unexpectedTotal,
     addUnexpected,
     removeUnexpected,
+
     personalSpendingTotal,
   } = usePayflow();
 
@@ -197,23 +217,24 @@ export default function DashboardScreen() {
     );
   }
 
-  // If setup gate is still required, you can route it into Settings tab later.
-  // For now, we keep it simple: if setup isn't completed, show a minimal prompt.
+  // If setup gate is still required, route user to Settings tab to finish setup.
+  // (We keep this minimal and non-looping.)
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
         <View style={{ flex: 1, padding: 16, paddingTop: 10 + insets.top }}>
           <Card>
-            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to PayFlow</Text>
+            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome</Text>
             <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-              Go to the <Text style={{ color: COLORS.textStrong }}>Settings</Text> tab to complete setup.
+              Go to <Text style={{ color: COLORS.textStrong }}>Settings</Text> to complete setup.
             </Text>
 
             <Divider />
 
+            {/* keep this only if you want a temporary bypass while developing */}
             <TextBtn
-              label="Mark setup complete (temporary)"
+              label="Mark setup complete (dev)"
               kind="green"
               onPress={() => setHasCompletedSetup(true)}
             />
@@ -258,7 +279,11 @@ export default function DashboardScreen() {
                   <TextBtn label="◀︎" onPress={() => setCycleOffset((o) => o - 1)} />
                   <View style={{ alignItems: "center", flex: 1 }}>
                     <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                      {cycleOffset === 0 ? "This paycheck" : cycleOffset > 0 ? `Next +${cycleOffset}` : `Prev ${cycleOffset}`}
+                      {cycleOffset === 0
+                        ? "This paycheck"
+                        : cycleOffset > 0
+                        ? `Next +${cycleOffset}`
+                        : `Prev ${cycleOffset}`}
                     </Text>
                     <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" }}>
                       Payday {formatDate(viewCycle.payday)}
@@ -313,9 +338,12 @@ export default function DashboardScreen() {
                       {catItems.map((it) => {
                         const state = activeChecked[it.id];
                         const isChecked = !!state?.checked;
+
                         const subtitleParts: string[] = [];
                         if (it.notes) subtitleParts.push(it.notes);
-                        if (isChecked && state?.at) subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
+                        if (isChecked && state?.at)
+                          subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
+
                         const subtitle = subtitleParts.filter(Boolean).join(" • ");
 
                         return (
@@ -372,7 +400,11 @@ export default function DashboardScreen() {
                             </View>
                             <View style={{ alignItems: "flex-end", gap: 8 }}>
                               <Chip>{fmtMoney(x.amount)}</Chip>
-                              <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
+                              <TextBtn
+                                label="Remove"
+                                kind="red"
+                                onPress={() => removeUnexpected(viewCycle.id, x.id)}
+                              />
                             </View>
                           </View>
                         </View>
@@ -382,7 +414,9 @@ export default function DashboardScreen() {
                 ) : (
                   <>
                     <Divider />
-                    <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None yet. Tap “Add” to record one.</Text>
+                    <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                      None yet. Tap “Add” to record one.
+                    </Text>
                   </>
                 )}
               </Card>

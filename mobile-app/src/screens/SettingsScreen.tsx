@@ -1,5 +1,5 @@
 // src/screens/SettingsScreen.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Platform,
@@ -14,21 +14,19 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { usePayflow } from "@/src/state/PayFlowProvider";
 import {
-  usePayflow,
   safeParseNumber,
+  clamp,
+  formatDate,
   type Settings,
   type Bill,
   type Allocation,
   type MonthlyItem,
   type PersonalSpendingItem,
-} from "@/src/state/usePayflow";
+} from "@/src/state/payflowHelpers";
 
 import { Card, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
 
 function hasValidAnchorDate(iso: string) {
   if (!iso) return false;
@@ -43,15 +41,6 @@ function toAnchorISO(d: Date) {
 function anchorDateFromISO(iso: string) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date() : d;
-}
-
-function formatDate(d: Date) {
-  return d.toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 }
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
@@ -87,13 +76,12 @@ export default function SettingsScreen() {
     for (const b of settings.bills || []) nextBillMap[b.id] = String(b.dueDay ?? "");
 
     const nextMonthlyMap: Record<string, string> = {};
-    for (const m of settings.monthlyItems || []) nextMonthlyMap[m.id] = String(m.dueDay ?? "");
+    for (const m of settings.monthlyItems || [])
+      nextMonthlyMap[m.id] = String(m.dueDay ?? "");
 
     setBillDueText(nextBillMap);
     setMonthlyDueText(nextMonthlyMap);
   }, [settings]);
-
-  const keyboardOffset = Math.max(0, insets.top + 24);
 
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
     requestAnimationFrame(() => {
@@ -268,21 +256,17 @@ export default function SettingsScreen() {
   }
 
   function confirmResetAll() {
-    Alert.alert(
-      "Reset ALL",
-      "This clears all saved data and returns to setup. Continue?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Reset ALL",
-          style: "destructive",
-          onPress: async () => {
-            await resetEverything();
-            Alert.alert("Reset", "All data cleared. Please complete setup again.");
-          },
+    Alert.alert("Reset ALL", "This clears all saved data and returns to setup. Continue?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Reset ALL",
+        style: "destructive",
+        onPress: async () => {
+          await resetEverything();
+          Alert.alert("Reset", "All data cleared. Please complete setup again.");
         },
-      ]
-    );
+      },
+    ]);
   }
 
   if (!loaded) {
@@ -355,8 +339,7 @@ export default function SettingsScreen() {
                     style={{
                       marginTop: 6,
                       borderWidth: 1,
-                      borderColor:
-                        anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
+                      borderColor: anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
                       borderRadius: 14,
                       paddingVertical: 12,
                       paddingHorizontal: 12,
@@ -369,9 +352,7 @@ export default function SettingsScreen() {
                         fontWeight: "800",
                       }}
                     >
-                      {anchorSelected
-                        ? formatDate(anchorDateFromISO(local.anchorISO))
-                        : "Select a payday"}
+                      {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                     </Text>
                     <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
                       Tap to pick a date
@@ -548,7 +529,9 @@ export default function SettingsScreen() {
                     <Field
                       label="Amount"
                       value={String(p.amount)}
-                      onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
+                      onChangeText={(s) =>
+                        updatePersonalSpending(p.id, { amount: safeParseNumber(s) })
+                      }
                       keyboardType="numeric"
                       placeholder="0"
                       onFocusScrollToInput={scrollToInput}
@@ -709,14 +692,7 @@ export default function SettingsScreen() {
               <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
             </View>
 
-            <Text
-              style={{
-                color: COLORS.faint,
-                marginTop: 10,
-                textAlign: "center",
-                fontWeight: "700",
-              }}
-            >
+            <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
               Offline • Saved on-device
             </Text>
           </View>
