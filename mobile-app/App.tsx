@@ -1,5 +1,5 @@
 // mobile-app/App.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   StatusBar,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -24,10 +25,14 @@ import {
  * - Checklist remains: categories, checkboxes, per-cycle
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
  *
- * ✅ NEW FIXES:
- * 1) Real first-time launch setup screen (gated by hasCompletedSetup)
- * 2) Schema versioning — can force a clean start when you change logic/defaults
- * 3) Defaults set to ZERO (no phantom prefilled amounts)
+ * ✅ Included here:
+ * - First-time setup gating (hasCompletedSetup)
+ * - Schema versioning
+ * - Calendar date picker for anchor payday (weekly/biweekly)
+ * - FORCE date selection in setup (anchorISO starts empty, validation blocks finish)
+ * - Auto-open calendar on first setup load if not selected
+ * - Red outline when user tries to finish without selecting date
+ * - Preview text ("Next payday ... • Weekly/Bi-weekly")
  */
 
 /** -------------------- Types -------------------- */
@@ -46,7 +51,7 @@ type Settings = {
   payFrequency: PayFrequency;
 
   payAmount: number;
-  anchorISO: string;
+  anchorISO: string; // weekly/biweekly only (forced during setup)
 
   twiceMonthlyDay1: number; // 1–28
   twiceMonthlyDay2: number; // 1–28
@@ -76,10 +81,7 @@ type Cycle = {
 
 /** -------------------- Storage -------------------- */
 
-// IMPORTANT:
-// - If you ever need to force everyone to re-run setup (or wipe old restored data),
-//   bump SCHEMA_VERSION by +1.
-// - This also fixes "Android restored my old data after reinstall" problems in practice.
+// Bump SCHEMA_VERSION to force wipe / re-setup if needed.
 const STORAGE_KEY = "pb_mobile_v2";
 const SCHEMA_VERSION = 2;
 
@@ -93,13 +95,12 @@ type Persisted = {
   activeCycleId?: string;
 };
 
-// ✅ Defaults set to ZERO (as you requested)
+// ✅ Defaults: everything 0 and anchorISO intentionally empty to force selection in setup
 const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
   payAmount: 0,
 
-  // anchor can be anything valid; user can change in setup/settings
-  anchorISO: "2026-01-09T00:00:00-05:00",
+  anchorISO: "", // ✅ force user to pick in setup for weekly/biweekly
 
   twiceMonthlyDay1: 1,
   twiceMonthlyDay2: 15,
@@ -152,6 +153,45 @@ function formatDate(d: Date) {
   });
 }
 
+/** ✅ Anchor helpers (calendar) */
+
+function hasValidAnchorDate(iso: string) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  return !Number.isNaN(d.getTime());
+}
+
+function toAnchorISO(d: Date) {
+  // Simple + consistent storage
+  return d.toISOString();
+}
+
+function anchorDateFromISO(iso: string) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+// Preview: compute next payday from anchor for weekly/biweekly
+function getNextPaydayFromAnchor(payFrequency: PayFrequency, anchorISO: string, now = new Date()) {
+  if (!(payFrequency === "weekly" || payFrequency === "biweekly")) return null;
+  if (!hasValidAnchorDate(anchorISO)) return null;
+
+  const stepDays = payFrequency === "weekly" ? 7 : 14;
+  const stepMs = stepDays * 86400000;
+
+  const anchor = startOfDay(new Date(anchorISO));
+  const today = startOfDay(now);
+
+  const a = anchor.getTime();
+  const t = today.getTime();
+
+  if (t <= a) return anchor;
+
+  const diff = t - a;
+  const k = Math.ceil(diff / stepMs);
+  return startOfDay(new Date(a + k * stepMs));
+}
+
 /** -------------------- Visual system -------------------- */
 
 const COLORS = {
@@ -187,7 +227,13 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
 
   if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
     const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
-    const anchor = startOfDay(new Date(settings.anchorISO));
+
+    // ✅ Safety: if anchorISO is missing (dev/hot reload), fall back to today so app doesn't crash.
+    const anchorISO = hasValidAnchorDate(settings.anchorISO)
+      ? settings.anchorISO
+      : new Date().toISOString();
+
+    const anchor = startOfDay(new Date(anchorISO));
     const t = n.getTime();
     const a = anchor.getTime();
     const idx = t < a ? 0 : Math.floor((t - a) / msStep);
@@ -418,10 +464,12 @@ function TextBtn({
   label,
   onPress,
   kind = "default",
+  disabled,
 }: {
   label: string;
   onPress: () => void;
   kind?: "default" | "green" | "red";
+  disabled?: boolean;
 }) {
   const bg =
     kind === "green"
@@ -439,6 +487,7 @@ function TextBtn({
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={{
         paddingVertical: 10,
         paddingHorizontal: 12,
@@ -446,6 +495,7 @@ function TextBtn({
         borderWidth: 1,
         borderColor: br,
         backgroundColor: bg,
+        opacity: disabled ? 0.45 : 1,
       }}
     >
       <Text style={{ color: COLORS.text, fontWeight: "900" }}>{label}</Text>
@@ -505,11 +555,9 @@ export default function App() {
 
 function AppInner() {
   const insets = useSafeAreaInsets();
-
   const [screen, setScreen] = useState<Screen>("checklist");
 
   const [loaded, setLoaded] = useState(false);
-
   const [hasCompletedSetup, setHasCompletedSetup] = useState(false);
 
   const [settings, setSettings] = useState<Settings>(defaultSettings());
@@ -541,21 +589,18 @@ function AppInner() {
         if (raw) {
           const parsed = JSON.parse(raw) as Persisted;
 
-          // ✅ If schema changed or setup not completed, treat as "first launch"
           if (parsed?.schemaVersion === SCHEMA_VERSION && parsed?.settings) {
             setSettings(parsed.settings);
             setCheckedByCycle(parsed.checkedByCycle || {});
             setAppliedDebtCycles(parsed.appliedDebtCycles || {});
             setHasCompletedSetup(!!parsed.hasCompletedSetup);
           } else {
-            // schema mismatch: wipe to defaults + require setup
             setSettings(defaultSettings());
             setCheckedByCycle({});
             setAppliedDebtCycles({});
             setHasCompletedSetup(false);
           }
         } else {
-          // no storage: first launch
           setHasCompletedSetup(false);
         }
       } catch {
@@ -633,7 +678,6 @@ function AppInner() {
     ]);
   }
 
-  // ✅ First time launch gate
   if (!loaded) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -645,6 +689,7 @@ function AppInner() {
     );
   }
 
+  // ✅ Setup gate
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -700,7 +745,6 @@ function AppInner() {
           backgroundColor: COLORS.bg,
         }}
       >
-        {/* Top nav */}
         <View
           style={{
             flexDirection: "row",
@@ -742,7 +786,8 @@ function AppInner() {
                 <Divider />
 
                 <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                  Pay amount: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.payAmount)}</Text>
+                  Pay amount:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.payAmount)}</Text>
                 </Text>
                 <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
                   Debt remaining:{" "}
@@ -812,7 +857,14 @@ function AppInner() {
                 ))}
               </View>
 
-              <Text style={{ color: "rgba(185,193,204,0.58)", marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+              <Text
+                style={{
+                  color: "rgba(185,193,204,0.58)",
+                  marginTop: 14,
+                  textAlign: "center",
+                  fontWeight: "700",
+                }}
+              >
                 Offline • Saved on-device
               </Text>
             </>
@@ -847,10 +899,42 @@ function SettingsScreen({
   onFinishSetup: () => void;
 }) {
   const [local, setLocal] = useState<Settings>(settings);
+  const [showAnchorPicker, setShowAnchorPicker] = useState(false);
+
+  // ✅ Used for "red outline when user tries to save without selecting"
+  const [anchorError, setAnchorError] = useState(false);
+
+  // ✅ Auto-open calendar once in setup when anchor isn't selected
+  const [didAutoOpenAnchor, setDidAutoOpenAnchor] = useState(false);
 
   useEffect(() => setLocal(settings), [settings]);
 
+  useEffect(() => {
+    if (mode !== "setup") return;
+
+    const needsAnchor =
+      (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
+      !hasValidAnchorDate(local.anchorISO);
+
+    if (needsAnchor && !didAutoOpenAnchor) {
+      setDidAutoOpenAnchor(true);
+      setShowAnchorPicker(true);
+    }
+  }, [mode, local.payFrequency, local.anchorISO, didAutoOpenAnchor]);
+
   function save() {
+    // ✅ Force anchor selection in setup for weekly/biweekly
+    if (
+      mode === "setup" &&
+      (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
+      !hasValidAnchorDate(local.anchorISO)
+    ) {
+      setAnchorError(true); // ✅ red outline
+      setShowAnchorPicker(true); // ✅ open calendar
+      Alert.alert("Select a payday", "Please choose your first payday to continue.");
+      return;
+    }
+
     if (local.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
     if (local.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
     if (local.twiceMonthlyDay1 < 1 || local.twiceMonthlyDay1 > 28)
@@ -873,6 +957,8 @@ function SettingsScreen({
 
   function setFreq(f: PayFrequency) {
     setLocal((s) => ({ ...s, payFrequency: f }));
+    // clear anchor error if switching away
+    if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
   function updateBill(billId: string, patch: Partial<Bill>) {
@@ -904,6 +990,17 @@ function SettingsScreen({
     return "Monthly";
   };
 
+  // ✅ Preview for weekly/biweekly anchor selection
+  const nextPayday = useMemo(
+    () => getNextPaydayFromAnchor(local.payFrequency, local.anchorISO, new Date()),
+    [local.payFrequency, local.anchorISO]
+  );
+
+  const shouldShowAnchor =
+    local.payFrequency === "weekly" || local.payFrequency === "biweekly";
+
+  const anchorSelected = hasValidAnchorDate(local.anchorISO);
+
   return (
     <View style={{ gap: 12 }}>
       <Card>
@@ -933,15 +1030,76 @@ function SettingsScreen({
           placeholder="0"
         />
 
-        {local.payFrequency === "weekly" || local.payFrequency === "biweekly" ? (
+        {/* ✅ Anchor payday calendar for weekly/biweekly */}
+        {shouldShowAnchor ? (
           <>
-            <Field
-              label="Anchor payday (ISO date)"
-              value={local.anchorISO}
-              onChangeText={(s) => setLocal((p) => ({ ...p, anchorISO: s }))}
-              placeholder="2026-01-09T00:00:00-05:00"
-            />
-            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
+              Anchor payday
+            </Text>
+
+            <Pressable
+              onPress={() => setShowAnchorPicker(true)}
+              style={{
+                marginTop: 6,
+                borderWidth: 1,
+                borderColor: anchorError && !anchorSelected ? "rgba(248,113,113,0.55)" : COLORS.border, // ✅ red outline on error
+                borderRadius: 14,
+                paddingVertical: 12,
+                paddingHorizontal: 12,
+                backgroundColor: "rgba(255,255,255,0.05)",
+              }}
+            >
+              <Text
+                style={{
+                  color: anchorSelected ? COLORS.textStrong : COLORS.faint,
+                  fontWeight: "800",
+                }}
+              >
+                {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
+              </Text>
+              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                Tap to pick a date
+              </Text>
+
+              {/* ✅ Preview text */}
+              {nextPayday ? (
+                <Text style={{ color: COLORS.muted, marginTop: 8, fontWeight: "700" }}>
+                  Next payday:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>{formatDate(nextPayday)}</Text>
+                  {"  "}•{"  "}
+                  <Text style={{ color: COLORS.textStrong }}>
+                    {local.payFrequency === "weekly" ? "Weekly" : "Bi-weekly"}
+                  </Text>
+                </Text>
+              ) : null}
+            </Pressable>
+
+            {showAnchorPicker ? (
+              <DateTimePicker
+                value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                onChange={(event, selectedDate) => {
+                  if (Platform.OS !== "ios") setShowAnchorPicker(false);
+                  if (!selectedDate) return;
+
+                  setAnchorError(false); // ✅ clear red outline once selected
+
+                  setLocal((p) => ({
+                    ...p,
+                    anchorISO: toAnchorISO(selectedDate),
+                  }));
+                }}
+              />
+            ) : null}
+
+            {Platform.OS === "ios" && showAnchorPicker ? (
+              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
+              </View>
+            ) : null}
+
+            <Text style={{ color: COLORS.faint, marginTop: 6, fontWeight: "700" }}>
               Tip: set this to your first payday date. Cycles repeat from here.
             </Text>
           </>
@@ -1096,7 +1254,11 @@ function SettingsScreen({
       </Card>
 
       <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-        <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
+        <TextBtn
+          label={mode === "setup" ? "Finish setup" : "Save settings"}
+          onPress={save}
+          kind="green"
+        />
         {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
       </View>
 
