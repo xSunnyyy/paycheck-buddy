@@ -910,6 +910,11 @@ function AppInner() {
                     </View>
 
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
+                      <Chip>{fmtMoney(unexpectedTotal)}</Chip>
+                    </View>
+
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
                       <Chip>{fmtMoney(totals.done)}</Chip>
                     </View>
