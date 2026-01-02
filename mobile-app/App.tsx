@@ -24,16 +24,18 @@ import {
  * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
  * ✅ Includes:
  * - First-time setup gate (hasCompletedSetup)
- * - Calendar picker for anchor payday (weekly/biweekly) — DOES NOT auto-open
- * - Force date selection during setup for weekly/biweekly (blocks Finish Setup)
- * - Paycheck Distributions (formerly pay-per allocations)
- * - Monthly Expenses list (multiple items)
+ * - Anchor payday for weekly/biweekly (no auto-open)
+ * - Paycheck Distributions (formerly allocations)
+ * - Monthly Expenses list (multiple) ✅ NOW with dueDay + cycle assignment like bills
  * - Scroll focused inputs above keyboard (Settings + Checklist + Unexpected)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
- * - Unexpected Expenses per-cycle (collapsible) on checklist (bottom)
- * - History: last 10 cycles with detail view
+ * - Unexpected Expenses per-cycle (collapsible) on checklist
+ * - History: last 10 cycles + detail view
+ * - Checklist cycle navigation: Prev / This / Next (see bills due in that paycheck)
  *
- * ✅ UI:
+ * ✅ UX fixes:
+ * - Bill due day input allows deleting/typing "20" etc (no forced "1" issue)
+ * - New Bill/Monthly/Distribution start with EMPTY name so you can type immediately
  * - Top nav centered: Checklist / History / Settings (no app name)
  */
 
@@ -59,33 +61,27 @@ type MonthlyItem = {
   id: string;
   label: string;
   amount: number;
+  dueDay: number; // 1–31
 };
 
 type Settings = {
   payFrequency: PayFrequency;
 
-  // Pay amount per pay event
   payAmount: number;
 
-  // Anchor date for weekly/biweekly
   anchorISO: string;
 
-  // Twice-monthly paydays
   twiceMonthlyDay1: number; // 1–28
   twiceMonthlyDay2: number; // 1–28
 
-  // Monthly payday
   monthlyPayDay: number; // 1–28
 
   bills: Bill[];
 
-  // ✅ Monthly expenses (multiple)
   monthlyItems: MonthlyItem[];
 
-  // ✅ Paycheck distributions (kept internal name allocations for compatibility)
   allocations: Allocation[];
 
-  // One total debt
   debtRemaining: number;
 };
 
@@ -108,11 +104,11 @@ type UnexpectedExpense = {
 
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v5";
+const STORAGE_KEY = "pb_mobile_v6";
 
 type Persisted = {
   hasCompletedSetup: boolean;
-  settings: any; // allow migration
+  settings: any; // migration-friendly
   checkedByCycle: Record<string, CheckedState>;
   appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
@@ -301,6 +297,33 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   return { id, label, start, end, payday };
 }
 
+/**
+ * ✅ Works for all frequencies
+ * offset = 0 current cycle
+ * offset = +1 next cycle
+ * offset = -1 previous cycle
+ */
+function getCycleWithOffset(settings: Settings, now: Date, offset: number): Cycle {
+  let c = getCurrentCycle(settings, now);
+  if (offset === 0) return c;
+
+  if (offset > 0) {
+    for (let i = 0; i < offset; i++) {
+      // move to day after end then compute cycle again
+      const probe = addDays(c.end, 1);
+      c = getCurrentCycle(settings, probe);
+    }
+    return c;
+  }
+
+  for (let i = 0; i < Math.abs(offset); i++) {
+    // move to day before start then compute cycle again
+    const probe = addDays(c.start, -1);
+    c = getCurrentCycle(settings, probe);
+  }
+  return c;
+}
+
 function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
   const cycles: Cycle[] = [];
   const seen = new Set<string>();
@@ -319,13 +342,13 @@ function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
   return cycles;
 }
 
-/** -------------------- Bills due date -> cycle assignment -------------------- */
+/** -------------------- Due date helpers -------------------- */
 
-function billDueDateForMonth(bill: Bill, ref: Date) {
+function dueDateForMonth(dueDay: number, ref: Date) {
   const year = ref.getFullYear();
   const month = ref.getMonth();
   const lastDay = new Date(year, month + 1, 0).getDate();
-  const day = clamp(bill.dueDay || 1, 1, lastDay);
+  const day = clamp(dueDay || 1, 1, lastDay);
   return startOfDay(new Date(year, month, day));
 }
 
@@ -353,34 +376,40 @@ function buildChecklistForCycle(
 
   // Bills included if due date falls in cycle range
   for (const bill of settings.bills || []) {
-    const due = billDueDateForMonth(bill, cycle.start);
-    const due2 = billDueDateForMonth(bill, cycle.end);
+    const dueA = dueDateForMonth(bill.dueDay || 1, cycle.start);
+    const dueB = dueDateForMonth(bill.dueDay || 1, cycle.end);
 
     const inThisCycle =
-      isBetweenInclusive(due, cycle.start, cycle.end) ||
-      isBetweenInclusive(due2, cycle.start, cycle.end);
+      isBetweenInclusive(dueA, cycle.start, cycle.end) ||
+      isBetweenInclusive(dueB, cycle.start, cycle.end);
 
     if (inThisCycle) {
       items.push({
         id: `bill_${bill.id}`,
-        label: `Pay ${bill.name}`,
+        label: `Pay ${bill.name || "Bill"}`,
         amount: bill.amount,
         category: "Bills",
-        notes: `Due day ${bill.dueDay}`,
+        notes: `Due day ${bill.dueDay || 1}`,
       });
     }
   }
 
-  // Monthly items (multiple)
+  // ✅ Monthly items behave like bills now (dueDay -> appears in correct cycle)
   for (const m of settings.monthlyItems || []) {
-    const amt = m.amount || 0;
-    if (amt > 0) {
+    const dueA = dueDateForMonth(m.dueDay || 1, cycle.start);
+    const dueB = dueDateForMonth(m.dueDay || 1, cycle.end);
+
+    const inThisCycle =
+      isBetweenInclusive(dueA, cycle.start, cycle.end) ||
+      isBetweenInclusive(dueB, cycle.start, cycle.end);
+
+    if (inThisCycle && (m.amount || 0) > 0) {
       items.push({
         id: `monthly_${m.id}`,
         label: `Monthly: ${m.label || "Expense"}`,
-        amount: amt,
+        amount: m.amount || 0,
         category: "Monthly",
-        notes: "Monthly expense",
+        notes: `Due day ${m.dueDay || 1}`,
       });
     }
   }
@@ -599,18 +628,16 @@ export default function App() {
 
 function migrateSettings(raw: any): Settings {
   const base = defaultSettings();
-  const s = { ...base, ...(raw || {}) };
+  const s: any = { ...base, ...(raw || {}) };
 
-  // Back-compat: convert old single monthly fields -> monthlyItems list
+  if (!Array.isArray(s.bills)) s.bills = [];
+  if (!Array.isArray(s.allocations)) s.allocations = [];
   if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
 
+  // Back-compat: old single monthly fields -> monthlyItems list
   const oldLabel = raw?.monthlyLabel;
   const oldAmount = raw?.monthlyAmount;
-
-  if (
-    (s.monthlyItems.length === 0) &&
-    (typeof oldLabel === "string" || typeof oldAmount === "number")
-  ) {
+  if (s.monthlyItems.length === 0 && (typeof oldLabel === "string" || typeof oldAmount === "number")) {
     const amt = typeof oldAmount === "number" ? oldAmount : 0;
     const lbl = typeof oldLabel === "string" ? oldLabel : "Monthly Expense";
     if ((amt || 0) > 0 || (lbl || "").trim().length > 0) {
@@ -619,14 +646,34 @@ function migrateSettings(raw: any): Settings {
           id: `monthly_migrated_${Date.now()}`,
           label: lbl || "Monthly Expense",
           amount: amt || 0,
+          dueDay: 1,
         },
       ];
     }
   }
 
-  if (!Array.isArray(s.bills)) s.bills = [];
-  if (!Array.isArray(s.allocations)) s.allocations = [];
-  if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
+  // Ensure monthly items have dueDay
+  s.monthlyItems = (s.monthlyItems || []).map((m: any) => ({
+    id: String(m.id ?? `monthly_${Date.now()}`),
+    label: String(m.label ?? ""),
+    amount: Number(m.amount ?? 0) || 0,
+    dueDay: clamp(Number(m.dueDay ?? 1) || 1, 1, 31),
+  }));
+
+  // Ensure bills dueDay ok
+  s.bills = (s.bills || []).map((b: any) => ({
+    id: String(b.id ?? `bill_${Date.now()}`),
+    name: String(b.name ?? ""),
+    amount: Number(b.amount ?? 0) || 0,
+    dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
+  }));
+
+  // Ensure allocations ok
+  s.allocations = (s.allocations || []).map((a: any) => ({
+    id: String(a.id ?? `alloc_${Date.now()}`),
+    label: String(a.label ?? ""),
+    amount: Number(a.amount ?? 0) || 0,
+  }));
 
   return s as Settings;
 }
@@ -648,7 +695,10 @@ function AppInner() {
     {}
   );
 
-  // Checklist ScrollView ref (used for keyboard scrolling + unexpected section)
+  // ✅ cycle navigation on checklist
+  const [cycleOffset, setCycleOffset] = useState(0);
+
+  // Checklist ScrollView ref (keyboard scrolling)
   const checklistScrollRef = useRef<ScrollView>(null);
 
   const scrollChecklistToInput = (inputRef: React.RefObject<TextInput>) => {
@@ -656,8 +706,6 @@ function AppInner() {
       const node = findNodeHandle(inputRef.current);
       const responder: any = checklistScrollRef.current?.getScrollResponder?.();
       if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
-
-      // extraHeight: spacing above keyboard
       responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
     });
   };
@@ -677,18 +725,22 @@ function AppInner() {
   const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(null);
 
   const now = new Date();
-  const cycle = useMemo(() => getCurrentCycle(settings, now), [settings, now]);
-  const activeChecked = checkedByCycle[cycle.id] ?? {};
 
-  const unexpected = unexpectedByCycle[cycle.id] ?? [];
+  const viewCycle = useMemo(
+    () => getCycleWithOffset(settings, now, cycleOffset),
+    [settings, now, cycleOffset]
+  );
+
+  const activeChecked = checkedByCycle[viewCycle.id] ?? {};
+  const unexpected = unexpectedByCycle[viewCycle.id] ?? [];
   const unexpectedTotal = useMemo(
     () => unexpected.reduce((sum, x) => sum + (x.amount || 0), 0),
     [unexpected]
   );
 
   const items = useMemo(
-    () => buildChecklistForCycle(settings, cycle, unexpectedTotal),
-    [settings, cycle, unexpectedTotal]
+    () => buildChecklistForCycle(settings, viewCycle, unexpectedTotal),
+    [settings, viewCycle, unexpectedTotal]
   );
 
   const grouped = useMemo(() => groupByCategory(items), [items]);
@@ -718,9 +770,9 @@ function AppInner() {
 
     setUnexpectedByCycle((prev) => {
       const next = { ...prev };
-      const arr = [...(next[cycle.id] ?? [])];
+      const arr = [...(next[viewCycle.id] ?? [])];
       arr.unshift(item);
-      next[cycle.id] = arr;
+      next[viewCycle.id] = arr;
       return next;
     });
 
@@ -732,7 +784,7 @@ function AppInner() {
   function removeUnexpected(id: string) {
     setUnexpectedByCycle((prev) => {
       const next = { ...prev };
-      next[cycle.id] = (next[cycle.id] ?? []).filter((x) => x.id !== id);
+      next[viewCycle.id] = (next[viewCycle.id] ?? []).filter((x) => x.id !== id);
       return next;
     });
   }
@@ -769,7 +821,7 @@ function AppInner() {
       settings,
       checkedByCycle,
       appliedDebtCycles,
-      activeCycleId: cycle.id,
+      activeCycleId: viewCycle.id,
       unexpectedByCycle,
     };
 
@@ -781,21 +833,21 @@ function AppInner() {
     checkedByCycle,
     appliedDebtCycles,
     unexpectedByCycle,
-    cycle.id,
+    viewCycle.id,
   ]);
 
   function toggleItem(id: string) {
     setCheckedByCycle((prev) => {
       const next = { ...prev };
-      const cur = { ...(next[cycle.id] ?? {}) };
+      const cur = { ...(next[viewCycle.id] ?? {}) };
       const was = cur[id]?.checked ?? false;
       cur[id] = { checked: !was, at: !was ? new Date().toISOString() : undefined };
-      next[cycle.id] = cur;
+      next[viewCycle.id] = cur;
       return next;
     });
   }
 
-  // Debt auto-decrease when debt_paydown is checked, once per cycle
+  // Debt auto-decrease when debt_paydown is checked, once per cycle (for whichever cycle user is viewing)
   useEffect(() => {
     if (!loaded) return;
     if (!hasCompletedSetup) return;
@@ -804,7 +856,7 @@ function AppInner() {
     if (!debtItem) return;
 
     const debtChecked = !!activeChecked["debt_paydown"]?.checked;
-    const alreadyApplied = !!appliedDebtCycles[cycle.id];
+    const alreadyApplied = !!appliedDebtCycles[viewCycle.id];
 
     if (debtChecked && !alreadyApplied) {
       const payAmount = debtItem.amount || 0;
@@ -814,9 +866,9 @@ function AppInner() {
         debtRemaining: Math.max(0, (s.debtRemaining || 0) - payAmount),
       }));
 
-      setAppliedDebtCycles((p) => ({ ...p, [cycle.id]: true }));
+      setAppliedDebtCycles((p) => ({ ...p, [viewCycle.id]: true }));
     }
-  }, [loaded, hasCompletedSetup, activeChecked, appliedDebtCycles, cycle.id, items]);
+  }, [loaded, hasCompletedSetup, activeChecked, appliedDebtCycles, viewCycle.id, items]);
 
   function resetEverything() {
     Alert.alert("Reset ALL", "This clears all saved data and returns to setup. Continue?", [
@@ -832,6 +884,7 @@ function AppInner() {
           setUnexpectedByCycle({});
           setHasCompletedSetup(false);
           setHistorySelectedCycleId(null);
+          setCycleOffset(0);
           setScreen("checklist");
           try {
             await AsyncStorage.removeItem(STORAGE_KEY);
@@ -908,11 +961,12 @@ function AppInner() {
               <SettingsScreen
                 mode="setup"
                 settings={settings}
-                onChange={setSettings}
+                onChange={(s) => setSettings(s)}
                 onBack={() => {}}
                 onFinishSetup={() => {
                   setHasCompletedSetup(true);
                   setScreen("checklist");
+                  setCycleOffset(0);
                 }}
               />
 
@@ -946,20 +1000,8 @@ function AppInner() {
           }}
         >
           {/* ✅ Top nav (centered, no app name) */}
-          <View
-            style={{
-              paddingTop: Math.max(0, insets.top),
-              alignItems: "center",
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                gap: 8,
-                flexWrap: "wrap",
-                justifyContent: "center",
-              }}
-            >
+          <View style={{ paddingTop: Math.max(0, insets.top), alignItems: "center" }}>
+            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
               <TextBtn
                 label="Checklist"
                 onPress={() => {
@@ -991,61 +1033,79 @@ function AppInner() {
             ref={checklistScrollRef}
             style={{ marginTop: 12 }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{
-              paddingBottom: 260, // ✅ extra room so inputs can scroll above keyboard
-              paddingTop: 2,
-            }}
+            contentContainerStyle={{ paddingBottom: 260, paddingTop: 2 }}
             showsVerticalScrollIndicator={false}
           >
             {screen === "checklist" ? (
               <>
-                {/* Summary */}
+                {/* ✅ Cycle navigation */}
                 <Card>
-                  <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                    {cycle.label} • Payday:{" "}
-                    <Text style={{ color: COLORS.textStrong }}>{formatDate(cycle.payday)}</Text>
-                  </Text>
-
-                  <Divider />
-
-                  <View style={{ gap: 10 }}>
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
-                      <Chip>{fmtMoney(settings.payAmount)}</Chip>
-                    </View>
-
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
-                      <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
-                    </View>
-
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
-                      <Chip>{fmtMoney(unexpectedTotal)}</Chip>
-                    </View>
-
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
-                      <Chip>{fmtMoney(totals.planned)}</Chip>
-                    </View>
-
-                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
-                      <Chip>{fmtMoney(totals.done)}</Chip>
-                    </View>
-
-                    <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                      Progress:{" "}
-                      <Text style={{ color: COLORS.textStrong }}>
-                        {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                    <TextBtn
+                      label="Prev"
+                      onPress={() => setCycleOffset((o) => o - 1)}
+                      disabled={false}
+                    />
+                    <View style={{ alignItems: "center", flex: 1 }}>
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                        {cycleOffset === 0 ? "This paycheck" : cycleOffset > 0 ? `Next +${cycleOffset}` : `Prev ${cycleOffset}`}
                       </Text>
-                    </Text>
+                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" }}>
+                        {viewCycle.label} • Payday {formatDate(viewCycle.payday)}
+                      </Text>
+                    </View>
+                    <TextBtn label="Next" onPress={() => setCycleOffset((o) => o + 1)} />
                   </View>
 
-                  <Divider />
-
-                  <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
+                  {cycleOffset !== 0 ? (
+                    <View style={{ marginTop: 10, alignItems: "center" }}>
+                      <TextBtn label="Back to current" onPress={() => setCycleOffset(0)} kind="green" />
+                    </View>
+                  ) : null}
                 </Card>
+
+                {/* Summary */}
+                <View style={{ marginTop: 12 }}>
+                  <Card>
+                    <View style={{ gap: 10 }}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
+                        <Chip>{fmtMoney(settings.payAmount)}</Chip>
+                      </View>
+
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
+                        <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
+                      </View>
+
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
+                        <Chip>{fmtMoney(unexpectedTotal)}</Chip>
+                      </View>
+
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                        <Chip>{fmtMoney(totals.planned)}</Chip>
+                      </View>
+
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
+                        <Chip>{fmtMoney(totals.done)}</Chip>
+                      </View>
+
+                      <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                        Progress:{" "}
+                        <Text style={{ color: COLORS.textStrong }}>
+                          {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                        </Text>
+                      </Text>
+                    </View>
+
+                    <Divider />
+
+                    <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
+                  </Card>
+                </View>
 
                 {/* Checklist */}
                 <View style={{ marginTop: 12, gap: 12 }}>
@@ -1103,14 +1163,14 @@ function AppInner() {
                   })}
                 </View>
 
-                {/* ✅ Unexpected Expense at the bottom */}
+                {/* Unexpected Expense at the bottom */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <Pressable
                       onPress={() => {
                         const next = !unexpectedOpen;
                         setUnexpectedOpen(next);
-                        if (next) scrollChecklistToEnd(); // open -> bring section into view
+                        if (next) scrollChecklistToEnd();
                       }}
                       style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
                     >
@@ -1135,7 +1195,6 @@ function AppInner() {
                           Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
                         </Text>
 
-                        {/* ✅ These now scroll above keyboard correctly */}
                         <Field
                           label="Label"
                           value={uxLabel}
@@ -1395,6 +1454,7 @@ function AppInner() {
                               label="Checklist"
                               onPress={() => {
                                 setHistorySelectedCycleId(null);
+                                setCycleOffset(0);
                                 setScreen("checklist");
                               }}
                               kind="green"
@@ -1575,7 +1635,7 @@ function AppInner() {
               <SettingsScreen
                 mode="normal"
                 settings={settings}
-                onChange={setSettings}
+                onChange={(s) => setSettings(s)}
                 onBack={() => setScreen("checklist")}
                 onFinishSetup={() => {}}
               />
@@ -1608,7 +1668,22 @@ function SettingsScreen({
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
   const [anchorError, setAnchorError] = useState(false);
 
-  useEffect(() => setLocal(settings), [settings]);
+  // ✅ Fix "can't delete 1" for dueDay by keeping due text separately until save
+  const [billDueText, setBillDueText] = useState<Record<string, string>>({});
+  const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setLocal(settings);
+
+    const nextBillMap: Record<string, string> = {};
+    for (const b of settings.bills || []) nextBillMap[b.id] = String(b.dueDay ?? 1);
+
+    const nextMonthlyMap: Record<string, string> = {};
+    for (const m of settings.monthlyItems || []) nextMonthlyMap[m.id] = String(m.dueDay ?? 1);
+
+    setBillDueText(nextBillMap);
+    setMonthlyDueText(nextMonthlyMap);
+  }, [settings]);
 
   const scrollSettingsToInput = (inputRef: React.RefObject<TextInput>) => {
     requestAnimationFrame(() => {
@@ -1620,6 +1695,7 @@ function SettingsScreen({
   };
 
   function save() {
+    // Force anchor selection in setup for weekly/biweekly
     if (
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
@@ -1631,16 +1707,31 @@ function SettingsScreen({
       }
     }
 
-    if (local.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
-    if (local.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
-    if (local.twiceMonthlyDay1 < 1 || local.twiceMonthlyDay1 > 28)
+    // Apply due-day text -> numbers (and validate)
+    const bills: Bill[] = (local.bills || []).map((b) => {
+      const t = billDueText[b.id] ?? String(b.dueDay ?? 1);
+      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
+      return { ...b, dueDay: n };
+    });
+
+    const monthlyItems: MonthlyItem[] = (local.monthlyItems || []).map((m) => {
+      const t = monthlyDueText[m.id] ?? String(m.dueDay ?? 1);
+      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
+      return { ...m, dueDay: n };
+    });
+
+    const nextLocal: Settings = { ...local, bills, monthlyItems };
+
+    if (nextLocal.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
+    if (nextLocal.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
+    if (nextLocal.twiceMonthlyDay1 < 1 || nextLocal.twiceMonthlyDay1 > 28)
       return Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
-    if (local.twiceMonthlyDay2 < 1 || local.twiceMonthlyDay2 > 28)
+    if (nextLocal.twiceMonthlyDay2 < 1 || nextLocal.twiceMonthlyDay2 > 28)
       return Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
-    if (local.monthlyPayDay < 1 || local.monthlyPayDay > 28)
+    if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
-    onChange(local);
+    onChange(nextLocal);
 
     if (mode === "setup") {
       Alert.alert("Saved", "Setup complete.");
@@ -1668,8 +1759,9 @@ function SettingsScreen({
     const id = `bill_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      bills: [...(s.bills || []), { id, name: "New Bill", amount: 0, dueDay: 1 }],
+      bills: [...(s.bills || []), { id, name: "", amount: 0, dueDay: 1 }],
     }));
+    setBillDueText((m) => ({ ...m, [id]: "1" }));
   }
 
   function removeBill(id: string) {
@@ -1677,6 +1769,11 @@ function SettingsScreen({
       ...s,
       bills: (s.bills || []).filter((b) => b.id !== id),
     }));
+    setBillDueText((m) => {
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
   }
 
   // Paycheck Distributions (allocations)
@@ -1684,7 +1781,7 @@ function SettingsScreen({
     const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      allocations: [...(s.allocations || []), { id, label: "New Distribution", amount: 0 }],
+      allocations: [...(s.allocations || []), { id, label: "", amount: 0 }],
     }));
   }
 
@@ -1707,8 +1804,9 @@ function SettingsScreen({
     const id = `monthly_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      monthlyItems: [...(s.monthlyItems || []), { id, label: "New Monthly Expense", amount: 0 }],
+      monthlyItems: [...(s.monthlyItems || []), { id, label: "", amount: 0, dueDay: 1 }],
     }));
+    setMonthlyDueText((m) => ({ ...m, [id]: "1" }));
   }
 
   function updateMonthlyItem(id: string, patch: Partial<MonthlyItem>) {
@@ -1723,6 +1821,11 @@ function SettingsScreen({
       ...s,
       monthlyItems: (s.monthlyItems || []).filter((m) => m.id !== id),
     }));
+    setMonthlyDueText((m) => {
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
   }
 
   const freqLabel = (f: PayFrequency) => {
@@ -1734,6 +1837,8 @@ function SettingsScreen({
 
   const shouldShowAnchor = local.payFrequency === "weekly" || local.payFrequency === "biweekly";
   const anchorSelected = hasValidAnchorDate(local.anchorISO);
+
+  const keepDigitsOnly = (s: string) => s.replace(/[^0-9]/g, "");
 
   return (
     <ScrollView
@@ -1789,12 +1894,7 @@ function SettingsScreen({
                   backgroundColor: "rgba(255,255,255,0.05)",
                 }}
               >
-                <Text
-                  style={{
-                    color: anchorSelected ? COLORS.textStrong : COLORS.faint,
-                    fontWeight: "800",
-                  }}
-                >
+                <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
                   {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                 </Text>
                 <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
@@ -1810,7 +1910,6 @@ function SettingsScreen({
                   onChange={(event, selectedDate) => {
                     if (Platform.OS !== "ios") setShowAnchorPicker(false);
                     if (!selectedDate) return;
-
                     setAnchorError(false);
                     setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
                   }}
@@ -1903,12 +2002,10 @@ function SettingsScreen({
                   backgroundColor: "rgba(255,255,255,0.03)",
                 }}
               >
-                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                  Paycheck Distribution
-                </Text>
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
 
                 <Field
-                  label="Label"
+                  label="Name"
                   value={a.label}
                   onChangeText={(s) => updateDistribution(a.id, { label: s })}
                   placeholder="Savings"
@@ -1937,7 +2034,7 @@ function SettingsScreen({
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-            Add multiple monthly expenses. Each becomes its own checklist item.
+            Each monthly expense appears in the paycheck cycle that contains its due day (like bills).
           </Text>
 
           <Divider />
@@ -1957,18 +2054,29 @@ function SettingsScreen({
                 <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
 
                 <Field
-                  label="Label"
+                  label="Name"
                   value={m.label}
                   onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
                   placeholder="Rent"
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
+
                 <Field
                   label="Amount"
                   value={String(m.amount)}
                   onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
                   keyboardType="numeric"
                   placeholder="0"
+                  onFocusScrollToInput={scrollSettingsToInput}
+                />
+
+                {/* ✅ due day text input (no forced clamp while typing) */}
+                <Field
+                  label="Due day (1–31)"
+                  value={monthlyDueText[m.id] ?? String(m.dueDay ?? 1)}
+                  onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
+                  keyboardType="numeric"
+                  placeholder="1"
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
 
@@ -1986,7 +2094,7 @@ function SettingsScreen({
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-            Bills show up automatically in the cycle that contains their due date.
+            Bills show up automatically in the paycheck cycle that contains their due date.
           </Text>
 
           <Divider />
@@ -2012,6 +2120,7 @@ function SettingsScreen({
                   placeholder="Verizon"
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
+
                 <Field
                   label="Amount"
                   value={String(b.amount)}
@@ -2020,10 +2129,12 @@ function SettingsScreen({
                   placeholder="0"
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
+
+                {/* ✅ due day text input (fixes "can't delete 1" / typing 20) */}
                 <Field
                   label="Due day (1–31)"
-                  value={String(b.dueDay)}
-                  onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
+                  value={billDueText[b.id] ?? String(b.dueDay ?? 1)}
+                  onChangeText={(s) => setBillDueText((map) => ({ ...map, [b.id]: keepDigitsOnly(s) }))}
                   keyboardType="numeric"
                   placeholder="1"
                   onFocusScrollToInput={scrollSettingsToInput}
