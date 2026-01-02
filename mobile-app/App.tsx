@@ -38,6 +38,10 @@ import {
  * - History tab
  * - Last 10 cycles list
  * - Cycle detail view: goals met, unexpected, bills paid/missed, missed items
+ *
+ * ✅ FIXES REQUESTED:
+ * - Remove "Paycheck Buddy" title in top nav (show only Checklist/History/Settings)
+ * - Unexpected inputs now scroll above keyboard when focused
  */
 
 /** -------------------- Types -------------------- */
@@ -60,19 +64,13 @@ type Allocation = {
 
 type Settings = {
   payFrequency: PayFrequency;
-
-  // Pay amount per pay event
   payAmount: number;
+  anchorISO: string;
 
-  // Anchor date for weekly/biweekly
-  anchorISO: string; // empty until user selects during setup
+  twiceMonthlyDay1: number;
+  twiceMonthlyDay2: number;
 
-  // Twice-monthly paydays
-  twiceMonthlyDay1: number; // 1–28
-  twiceMonthlyDay2: number; // 1–28
-
-  // Monthly payday
-  monthlyPayDay: number; // 1–28
+  monthlyPayDay: number;
 
   bills: Bill[];
 
@@ -80,10 +78,8 @@ type Settings = {
   monthlyLabel: string;
   monthlyAmount: number;
 
-  // Dynamic per-pay allocations
   allocations: Allocation[];
 
-  // One total debt
   debtRemaining: number;
 };
 
@@ -97,7 +93,6 @@ type Cycle = {
   payday: Date;
 };
 
-// Unexpected expense item (stored per-cycle)
 type UnexpectedExpense = {
   id: string;
   label: string;
@@ -302,12 +297,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
   return { id, label, start, end, payday };
 }
 
-/**
- * Build the last N cycles by repeatedly stepping "one day before the previous cycle start"
- * and asking getCurrentCycle() what cycle that date belongs to.
- *
- * Works for weekly/biweekly/twice-monthly/monthly.
- */
 function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
   const cycles: Cycle[] = [];
   const seen = new Set<string>();
@@ -321,7 +310,6 @@ function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
     const next = getCurrentCycle(settings, probe);
     cur = next;
 
-    // hard safety break
     if (cycles.length > n + 5) break;
   }
 
@@ -418,8 +406,10 @@ function buildChecklistForCycle(
     .filter((i) => i.id !== "debt_paydown")
     .reduce((sum, i) => sum + (i.amount || 0), 0);
 
-  // subtract unexpected expenses from remainder
-  const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal - (unexpectedTotal || 0));
+  const debtPay = Math.max(
+    0,
+    (settings.payAmount || 0) - nonDebtTotal - (unexpectedTotal || 0)
+  );
 
   return items.map((i) => (i.id === "debt_paydown" ? { ...i, amount: debtPay } : i));
 }
@@ -573,7 +563,8 @@ function Field({
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
         onFocus={() => {
-          if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 20));
+          // scroll a bit above the field so it isn't under the keyboard
+          if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 30));
         }}
         style={{
           marginTop: 6,
@@ -618,6 +609,14 @@ function AppInner() {
   const [unexpectedByCycle, setUnexpectedByCycle] = useState<
     Record<string, UnexpectedExpense[]>
   >({});
+
+  // ✅ Checklist scroll ref (so unexpected inputs can scroll into view)
+  const checklistScrollRef = useRef<ScrollView>(null);
+  const onChecklistFocusScrollToY = (y: number) => {
+    setTimeout(() => {
+      checklistScrollRef.current?.scrollTo({ y, animated: true });
+    }, 60);
+  };
 
   // Unexpected UI (Checklist only)
   const [unexpectedOpen, setUnexpectedOpen] = useState(false);
@@ -796,7 +795,6 @@ function AppInner() {
     return getLastNCycles(settings, new Date(), 10);
   }, [settings, hasCompletedSetup]);
 
-  // Helpers for history summaries
   function getCycleUnexpectedTotal(cycleId: string) {
     const arr = unexpectedByCycle[cycleId] ?? [];
     return arr.reduce((sum, x) => sum + (x.amount || 0), 0);
@@ -806,12 +804,6 @@ function AppInner() {
     return checkedByCycle[cycleId] ?? {};
   }
 
-  function getCycleItems(c: Cycle) {
-    const uxTot = getCycleUnexpectedTotal(c.id);
-    return buildChecklistForCycle(settings, c, uxTot);
-  }
-
-  // History detail selected cycle object
   const historySelectedCycle = useMemo(() => {
     if (!historySelectedCycleId) return null;
     return last10Cycles.find((c) => c.id === historySelectedCycleId) ?? null;
@@ -837,7 +829,7 @@ function AppInner() {
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+          keyboardVerticalOffset={0}
         >
           <View
             style={{
@@ -890,6 +882,7 @@ function AppInner() {
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={0}
       >
         <View
           style={{
@@ -900,18 +893,16 @@ function AppInner() {
             backgroundColor: COLORS.bg,
           }}
         >
-          {/* Top nav */}
+          {/* Top nav (✅ no app name/title) */}
           <View
             style={{
               flexDirection: "row",
-              justifyContent: "space-between",
+              justifyContent: "flex-end",
               alignItems: "center",
               gap: 10,
               paddingTop: Math.max(0, insets.top),
             }}
           >
-            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Paycheck Buddy</Text>
-
             <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
               <TextBtn
                 label="Checklist"
@@ -941,6 +932,7 @@ function AppInner() {
           </View>
 
           <ScrollView
+            ref={checklistScrollRef}
             style={{ marginTop: 12 }}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: 30, paddingTop: 2 }}
@@ -968,7 +960,6 @@ function AppInner() {
                       <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
                     </View>
 
-                    {/* ✅ Summary add-on for unexpected */}
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                       <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
                       <Chip>{fmtMoney(unexpectedTotal)}</Chip>
@@ -1051,11 +1042,16 @@ function AppInner() {
                   })}
                 </View>
 
-                {/* ✅ Unexpected Expense at the BOTTOM */}
+                {/* Unexpected Expense at the BOTTOM */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <Pressable
-                      onPress={() => setUnexpectedOpen((v) => !v)}
+                      onPress={() => {
+                        const next = !unexpectedOpen;
+                        setUnexpectedOpen(next);
+                        // If opening, bump the scroll a bit so the card is higher before typing
+                        if (next) onChecklistFocusScrollToY(99999);
+                      }}
                       style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
                     >
                       <View style={{ flex: 1 }}>
@@ -1079,48 +1075,23 @@ function AppInner() {
                           Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
                         </Text>
 
-                        <View style={{ marginTop: 10 }}>
-                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Label</Text>
-                          <TextInput
-                            value={uxLabel}
-                            onChangeText={setUxLabel}
-                            placeholder="Car repair"
-                            placeholderTextColor="rgba(185,193,204,0.45)"
-                            style={{
-                              marginTop: 6,
-                              borderWidth: 1,
-                              borderColor: COLORS.border,
-                              borderRadius: 14,
-                              paddingVertical: Platform.OS === "ios" ? 12 : 10,
-                              paddingHorizontal: 12,
-                              color: COLORS.textStrong,
-                              backgroundColor: "rgba(255,255,255,0.05)",
-                              fontWeight: "800",
-                            }}
-                          />
-                        </View>
+                        {/* ✅ Use Field so it scrolls above keyboard on focus */}
+                        <Field
+                          label="Label"
+                          value={uxLabel}
+                          onChangeText={setUxLabel}
+                          placeholder="Car repair"
+                          onFocusScrollToY={onChecklistFocusScrollToY}
+                        />
 
-                        <View style={{ marginTop: 10 }}>
-                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Amount</Text>
-                          <TextInput
-                            value={uxAmount}
-                            onChangeText={setUxAmount}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            placeholderTextColor="rgba(185,193,204,0.45)"
-                            style={{
-                              marginTop: 6,
-                              borderWidth: 1,
-                              borderColor: COLORS.border,
-                              borderRadius: 14,
-                              paddingVertical: Platform.OS === "ios" ? 12 : 10,
-                              paddingHorizontal: 12,
-                              color: COLORS.textStrong,
-                              backgroundColor: "rgba(255,255,255,0.05)",
-                              fontWeight: "800",
-                            }}
-                          />
-                        </View>
+                        <Field
+                          label="Amount"
+                          value={uxAmount}
+                          onChangeText={setUxAmount}
+                          keyboardType="numeric"
+                          placeholder="0"
+                          onFocusScrollToY={onChecklistFocusScrollToY}
+                        />
 
                         <View style={{ marginTop: 10, alignItems: "flex-start" }}>
                           <TextBtn
@@ -1215,10 +1186,16 @@ function AppInner() {
                           setHistorySelectedCycleId(c.id);
                           setScreen("history_detail");
                         }}
-                        style={{}}
                       >
                         <Card>
-                          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 10,
+                            }}
+                          >
                             <View style={{ flex: 1 }}>
                               <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
                                 {idx === 0 ? "Current cycle" : `Cycle #${idx + 1}`} • {formatDate(c.payday)}
@@ -1229,7 +1206,14 @@ function AppInner() {
                             </View>
 
                             <View style={{ alignItems: "flex-end" }}>
-                              <Text style={{ color: metGoal ? "rgba(34,197,94,0.95)" : "rgba(251,191,36,0.95)", fontWeight: "900" }}>
+                              <Text
+                                style={{
+                                  color: metGoal
+                                    ? "rgba(34,197,94,0.95)"
+                                    : "rgba(251,191,36,0.95)",
+                                  fontWeight: "900",
+                                }}
+                              >
                                 {metGoal ? "GOAL MET" : "INCOMPLETE"}
                               </Text>
                               <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 4 }}>
@@ -1354,7 +1338,6 @@ function AppInner() {
                           </View>
                         </Card>
 
-                        {/* Unexpected expenses list */}
                         <View style={{ marginTop: 12 }}>
                           <Card>
                             <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -1390,7 +1373,6 @@ function AppInner() {
                           </Card>
                         </View>
 
-                        {/* Bills paid/missed */}
                         <View style={{ marginTop: 12 }}>
                           <Card>
                             <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills</Text>
@@ -1463,7 +1445,6 @@ function AppInner() {
                           </Card>
                         </View>
 
-                        {/* Missed items (everything) */}
                         <View style={{ marginTop: 12 }}>
                           <Card>
                             <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Missed items</Text>
@@ -1697,7 +1678,6 @@ function SettingsScreen({
             onFocusScrollToY={onFocusScrollToY}
           />
 
-          {/* Anchor payday calendar (no auto-open) */}
           {shouldShowAnchor ? (
             <>
               <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
