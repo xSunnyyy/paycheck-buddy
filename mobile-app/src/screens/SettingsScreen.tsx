@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 
 import {
   usePayflow,
@@ -25,6 +26,8 @@ import {
 } from "@/src/state/usePayflow";
 
 import { Card, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
+
+/* ---------------- helpers ---------------- */
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -56,8 +59,11 @@ function formatDate(d: Date) {
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
 
+/* ---------------- screen ---------------- */
+
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
 
   const {
     loaded,
@@ -76,11 +82,11 @@ export default function SettingsScreen() {
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
   const [anchorError, setAnchorError] = useState(false);
 
-  // Editable due-day text buffers so user can fully delete/retype
+  // Editable due-day buffers (lets user delete/retype fully)
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
   const [cardDueText, setCardDueText] = useState<Record<string, string>>({});
 
-  // Calendar picker for card due date (we store day-of-month only)
+  // Calendar picker open card id
   const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -94,8 +100,6 @@ export default function SettingsScreen() {
     for (const c of settings.creditCards || []) nextCardMap[c.id] = String(c.dueDay ?? "");
     setCardDueText(nextCardMap);
   }, [settings]);
-
-  const keyboardOffset = Math.max(0, insets.top + 24);
 
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
     requestAnimationFrame(() => {
@@ -123,9 +127,8 @@ export default function SettingsScreen() {
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
-  // -----------------------------
-  // Paycheck Distributions
-  // -----------------------------
+  /* ---------------- Distributions ---------------- */
+
   function addDistribution() {
     const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
@@ -148,9 +151,8 @@ export default function SettingsScreen() {
     }));
   }
 
-  // -----------------------------
-  // Personal Spending
-  // -----------------------------
+  /* ---------------- Personal Spending ---------------- */
+
   function addPersonalSpending() {
     const id = `ps_${Date.now()}`;
     setLocal((s) => ({
@@ -173,9 +175,8 @@ export default function SettingsScreen() {
     }));
   }
 
-  // -----------------------------
-  // Monthly Items
-  // -----------------------------
+  /* ---------------- Monthly Items ---------------- */
+
   function addMonthlyItem() {
     const id = `monthly_${Date.now()}`;
     setLocal((s) => ({
@@ -204,9 +205,8 @@ export default function SettingsScreen() {
     });
   }
 
-  // -----------------------------
-  // Credit Cards
-  // -----------------------------
+  /* ---------------- Credit Cards ---------------- */
+
   function updateCard(cardId: string, patch: Partial<CreditCard>) {
     setLocal((s) => ({
       ...s,
@@ -235,17 +235,17 @@ export default function SettingsScreen() {
     });
   }
 
-  // -----------------------------
-  // Save
-  // -----------------------------
+  /* ---------------- Save ---------------- */
+
   function save() {
+    // Anchor required for weekly/biweekly
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
       return;
     }
 
-    // Commit due-day text buffers into numeric dueDay values
+    // Commit due-day buffers
     const monthlyItems: MonthlyItem[] = (local.monthlyItems || []).map((m) => {
       const t = monthlyDueText[m.id] ?? String(m.dueDay ?? "");
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
@@ -270,22 +270,17 @@ export default function SettingsScreen() {
     if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
-    // Credit card validation (light, but prevents obvious junk)
-    for (const c of nextLocal.creditCards || []) {
-      if ((c.totalDue || 0) < 0) return Alert.alert("Invalid", "Total Amount Due must be >= 0");
-      if ((c.minDue || 0) < 0) return Alert.alert("Invalid", "Minimum Due must be >= 0");
-      if ((c.minDue || 0) > (c.totalDue || 0) && (c.totalDue || 0) > 0) {
-        return Alert.alert("Invalid", "Minimum Due cannot be greater than Total Amount Due.");
-      }
-      if ((c.dueDay || 1) < 1 || (c.dueDay || 1) > 31) {
-        return Alert.alert("Invalid", "Credit card due day must be 1–31.");
-      }
-    }
-
     setSettings(nextLocal);
 
     if (mode === "setup") {
+      // ✅ set flag first
       setHasCompletedSetup(true);
+
+      // ✅ then redirect immediately (no restart required)
+      requestAnimationFrame(() => {
+        router.replace("/(tabs)/index");
+      });
+
       Alert.alert("Saved", "Setup complete. You can now use Dashboard + History.");
     } else {
       Alert.alert("Saved", "Settings saved to device.");
@@ -306,6 +301,8 @@ export default function SettingsScreen() {
     ]);
   }
 
+  /* ---------------- UI ---------------- */
+
   if (!loaded) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -320,7 +317,6 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-
       <View
         style={{
           flex: 1,
@@ -753,14 +749,7 @@ export default function SettingsScreen() {
               <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
             </View>
 
-            <Text
-              style={{
-                color: COLORS.faint,
-                marginTop: 10,
-                textAlign: "center",
-                fontWeight: "700",
-              }}
-            >
+            <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
               Offline • Saved on-device
             </Text>
           </View>
