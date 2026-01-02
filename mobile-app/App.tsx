@@ -10,6 +10,7 @@ import {
   Platform,
   StatusBar,
   KeyboardAvoidingView,
+  findNodeHandle,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -25,23 +26,15 @@ import {
  * - First-time setup gate (hasCompletedSetup)
  * - Calendar picker for anchor payday (weekly/biweekly) — DOES NOT auto-open
  * - Force date selection during setup for weekly/biweekly (blocks Finish Setup)
- * - Dynamic allocations list (add/remove pay-per items)
- * - Scroll inputs into view on focus (setup + settings)
+ * - Paycheck Distributions (formerly pay-per allocations)
+ * - Monthly Expenses list (multiple items)
+ * - Scroll focused inputs above keyboard (Settings + Checklist + Unexpected)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
+ * - Unexpected Expenses per-cycle (collapsible) on checklist (bottom)
+ * - History: last 10 cycles with detail view
  *
- * ✅ Added:
- * - Unexpected Expenses (per-cycle), collapsible, on Checklist screen ONLY (BOTTOM)
- * - Unexpected totals reduce remainder -> recalculates Debt Paydown
- * - Summary shows Unexpected total
- *
- * ✅ NEW:
- * - History tab
- * - Last 10 cycles list
- * - Cycle detail view: goals met, unexpected, bills paid/missed, missed items
- *
- * ✅ FIXES REQUESTED:
- * - Remove "Paycheck Buddy" title in top nav (show only Checklist/History/Settings)
- * - Unexpected inputs now scroll above keyboard when focused
+ * ✅ UI:
+ * - Top nav centered: Checklist / History / Settings (no app name)
  */
 
 /** -------------------- Types -------------------- */
@@ -62,24 +55,37 @@ type Allocation = {
   amount: number;
 };
 
+type MonthlyItem = {
+  id: string;
+  label: string;
+  amount: number;
+};
+
 type Settings = {
   payFrequency: PayFrequency;
+
+  // Pay amount per pay event
   payAmount: number;
+
+  // Anchor date for weekly/biweekly
   anchorISO: string;
 
-  twiceMonthlyDay1: number;
-  twiceMonthlyDay2: number;
+  // Twice-monthly paydays
+  twiceMonthlyDay1: number; // 1–28
+  twiceMonthlyDay2: number; // 1–28
 
-  monthlyPayDay: number;
+  // Monthly payday
+  monthlyPayDay: number; // 1–28
 
   bills: Bill[];
 
-  // Monthly single item (kept as-is from your current file)
-  monthlyLabel: string;
-  monthlyAmount: number;
+  // ✅ Monthly expenses (multiple)
+  monthlyItems: MonthlyItem[];
 
+  // ✅ Paycheck distributions (kept internal name allocations for compatibility)
   allocations: Allocation[];
 
+  // One total debt
   debtRemaining: number;
 };
 
@@ -102,15 +108,14 @@ type UnexpectedExpense = {
 
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v4_ux_hist";
+const STORAGE_KEY = "pb_mobile_v5";
 
 type Persisted = {
   hasCompletedSetup: boolean;
-  settings: Settings;
+  settings: any; // allow migration
   checkedByCycle: Record<string, CheckedState>;
   appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
-
   unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
 };
 
@@ -122,8 +127,7 @@ const defaultSettings = (): Settings => ({
   twiceMonthlyDay2: 15,
   monthlyPayDay: 1,
   bills: [],
-  monthlyLabel: "Monthly Expense",
-  monthlyAmount: 0,
+  monthlyItems: [],
   allocations: [],
   debtRemaining: 0,
 });
@@ -307,8 +311,7 @@ function getLastNCycles(settings: Settings, now: Date, n: number): Cycle[] {
     seen.add(cur.id);
 
     const probe = addDays(cur.start, -1);
-    const next = getCurrentCycle(settings, probe);
-    cur = next;
+    cur = getCurrentCycle(settings, probe);
 
     if (cycles.length > n + 5) break;
   }
@@ -368,27 +371,30 @@ function buildChecklistForCycle(
     }
   }
 
-  // Monthly single item
-  if ((settings.monthlyAmount || 0) > 0) {
-    items.push({
-      id: "monthly_single",
-      label: `Monthly: ${settings.monthlyLabel || "Expense"}`,
-      amount: settings.monthlyAmount || 0,
-      category: "Monthly",
-      notes: "One monthly item",
-    });
+  // Monthly items (multiple)
+  for (const m of settings.monthlyItems || []) {
+    const amt = m.amount || 0;
+    if (amt > 0) {
+      items.push({
+        id: `monthly_${m.id}`,
+        label: `Monthly: ${m.label || "Expense"}`,
+        amount: amt,
+        category: "Monthly",
+        notes: "Monthly expense",
+      });
+    }
   }
 
-  // Dynamic allocations
+  // Paycheck Distributions (internal category Allocations)
   for (const a of settings.allocations || []) {
     const amt = a.amount || 0;
     if (amt > 0) {
       items.push({
         id: `alloc_${a.id}`,
-        label: a.label || "Allocation",
+        label: a.label || "Distribution",
         amount: amt,
         category: "Allocations",
-        notes: "Repeat each pay cycle",
+        notes: "Per-pay distribution",
       });
     }
   }
@@ -422,6 +428,10 @@ function groupByCategory(items: ChecklistItem[]) {
     map.set(it.category, arr);
   }
   return Array.from(map.entries());
+}
+
+function displayCategory(cat: Category) {
+  return cat === "Allocations" ? "Paycheck Distributions" : cat;
 }
 
 /** -------------------- UI Components -------------------- */
@@ -525,9 +535,7 @@ function TextBtn({
 }
 
 /**
- * Field that:
- * - captures its Y position via onLayout
- * - scrolls to itself when focused (so typing is visible)
+ * ✅ Field that scrolls itself above the keyboard using ScrollView's native helper
  */
 function Field({
   label,
@@ -535,7 +543,7 @@ function Field({
   onChangeText,
   keyboardType = "default",
   placeholder,
-  onFocusScrollToY,
+  onFocusScrollToInput,
   borderColorOverride,
 }: {
   label: string;
@@ -543,29 +551,22 @@ function Field({
   onChangeText: (s: string) => void;
   keyboardType?: "default" | "numeric";
   placeholder?: string;
-  onFocusScrollToY?: (y: number) => void;
+  onFocusScrollToInput?: (inputRef: React.RefObject<TextInput>) => void;
   borderColorOverride?: string;
 }) {
-  const yRef = useRef<number>(0);
+  const inputRef = useRef<TextInput>(null);
 
   return (
-    <View
-      style={{ marginTop: 10 }}
-      onLayout={(e) => {
-        yRef.current = e.nativeEvent.layout.y;
-      }}
-    >
+    <View style={{ marginTop: 10 }}>
       <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
       <TextInput
+        ref={inputRef}
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
         placeholder={placeholder}
         placeholderTextColor="rgba(185,193,204,0.45)"
-        onFocus={() => {
-          // scroll a bit above the field so it isn't under the keyboard
-          if (onFocusScrollToY) onFocusScrollToY(Math.max(0, yRef.current - 30));
-        }}
+        onFocus={() => onFocusScrollToInput?.(inputRef)}
         style={{
           marginTop: 6,
           borderWidth: 1,
@@ -594,6 +595,44 @@ export default function App() {
   );
 }
 
+/** -------------------- Migration -------------------- */
+
+function migrateSettings(raw: any): Settings {
+  const base = defaultSettings();
+  const s = { ...base, ...(raw || {}) };
+
+  // Back-compat: convert old single monthly fields -> monthlyItems list
+  if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
+
+  const oldLabel = raw?.monthlyLabel;
+  const oldAmount = raw?.monthlyAmount;
+
+  if (
+    (s.monthlyItems.length === 0) &&
+    (typeof oldLabel === "string" || typeof oldAmount === "number")
+  ) {
+    const amt = typeof oldAmount === "number" ? oldAmount : 0;
+    const lbl = typeof oldLabel === "string" ? oldLabel : "Monthly Expense";
+    if ((amt || 0) > 0 || (lbl || "").trim().length > 0) {
+      s.monthlyItems = [
+        {
+          id: `monthly_migrated_${Date.now()}`,
+          label: lbl || "Monthly Expense",
+          amount: amt || 0,
+        },
+      ];
+    }
+  }
+
+  if (!Array.isArray(s.bills)) s.bills = [];
+  if (!Array.isArray(s.allocations)) s.allocations = [];
+  if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
+
+  return s as Settings;
+}
+
+/** -------------------- Main -------------------- */
+
 function AppInner() {
   const insets = useSafeAreaInsets();
 
@@ -605,20 +644,31 @@ function AppInner() {
   const [settings, setSettings] = useState<Settings>(defaultSettings());
   const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
   const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
+  const [unexpectedByCycle, setUnexpectedByCycle] = useState<Record<string, UnexpectedExpense[]>>(
+    {}
+  );
 
-  const [unexpectedByCycle, setUnexpectedByCycle] = useState<
-    Record<string, UnexpectedExpense[]>
-  >({});
-
-  // ✅ Checklist scroll ref (so unexpected inputs can scroll into view)
+  // Checklist ScrollView ref (used for keyboard scrolling + unexpected section)
   const checklistScrollRef = useRef<ScrollView>(null);
-  const onChecklistFocusScrollToY = (y: number) => {
-    setTimeout(() => {
-      checklistScrollRef.current?.scrollTo({ y, animated: true });
-    }, 60);
+
+  const scrollChecklistToInput = (inputRef: React.RefObject<TextInput>) => {
+    requestAnimationFrame(() => {
+      const node = findNodeHandle(inputRef.current);
+      const responder: any = checklistScrollRef.current?.getScrollResponder?.();
+      if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
+
+      // extraHeight: spacing above keyboard
+      responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
+    });
   };
 
-  // Unexpected UI (Checklist only)
+  const scrollChecklistToEnd = () => {
+    requestAnimationFrame(() => {
+      checklistScrollRef.current?.scrollToEnd({ animated: true });
+    });
+  };
+
+  // Unexpected UI
   const [unexpectedOpen, setUnexpectedOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
@@ -640,6 +690,7 @@ function AppInner() {
     () => buildChecklistForCycle(settings, cycle, unexpectedTotal),
     [settings, cycle, unexpectedTotal]
   );
+
   const grouped = useMemo(() => groupByCategory(items), [items]);
 
   const totals = useMemo(() => {
@@ -675,8 +726,6 @@ function AppInner() {
 
     setUxLabel("");
     setUxAmount("");
-
-    // close after adding so user must open manually each time
     setUnexpectedOpen(false);
   }
 
@@ -695,7 +744,8 @@ function AppInner() {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as Persisted;
-          if (parsed?.settings) setSettings(parsed.settings);
+
+          if (parsed?.settings) setSettings(migrateSettings(parsed.settings));
           if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
           if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
           if (parsed?.unexpectedByCycle) setUnexpectedByCycle(parsed.unexpectedByCycle);
@@ -713,6 +763,7 @@ function AppInner() {
   // Save to storage
   useEffect(() => {
     if (!loaded) return;
+
     const data: Persisted = {
       hasCompletedSetup,
       settings,
@@ -721,6 +772,7 @@ function AppInner() {
       activeCycleId: cycle.id,
       unexpectedByCycle,
     };
+
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
   }, [
     loaded,
@@ -789,7 +841,7 @@ function AppInner() {
     ]);
   }
 
-  // History data (last 10 cycles)
+  // History (last 10 cycles)
   const last10Cycles = useMemo(() => {
     if (!hasCompletedSetup) return [];
     return getLastNCycles(settings, new Date(), 10);
@@ -893,17 +945,21 @@ function AppInner() {
             backgroundColor: COLORS.bg,
           }}
         >
-          {/* Top nav (✅ no app name/title) */}
+          {/* ✅ Top nav (centered, no app name) */}
           <View
             style={{
-              flexDirection: "row",
-              justifyContent: "flex-end",
-              alignItems: "center",
-              gap: 10,
               paddingTop: Math.max(0, insets.top),
+              alignItems: "center",
             }}
           >
-            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+            <View
+              style={{
+                flexDirection: "row",
+                gap: 8,
+                flexWrap: "wrap",
+                justifyContent: "center",
+              }}
+            >
               <TextBtn
                 label="Checklist"
                 onPress={() => {
@@ -935,7 +991,10 @@ function AppInner() {
             ref={checklistScrollRef}
             style={{ marginTop: 12 }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 30, paddingTop: 2 }}
+            contentContainerStyle={{
+              paddingBottom: 260, // ✅ extra room so inputs can scroll above keyboard
+              paddingTop: 2,
+            }}
             showsVerticalScrollIndicator={false}
           >
             {screen === "checklist" ? (
@@ -995,7 +1054,9 @@ function AppInner() {
                     return (
                       <Card key={cat}>
                         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
+                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
+                            {displayCategory(cat)}
+                          </Text>
                           <Chip>{fmtMoney(plannedForCat)} planned</Chip>
                         </View>
 
@@ -1042,15 +1103,14 @@ function AppInner() {
                   })}
                 </View>
 
-                {/* Unexpected Expense at the BOTTOM */}
+                {/* ✅ Unexpected Expense at the bottom */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
                     <Pressable
                       onPress={() => {
                         const next = !unexpectedOpen;
                         setUnexpectedOpen(next);
-                        // If opening, bump the scroll a bit so the card is higher before typing
-                        if (next) onChecklistFocusScrollToY(99999);
+                        if (next) scrollChecklistToEnd(); // open -> bring section into view
                       }}
                       style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
                     >
@@ -1075,13 +1135,13 @@ function AppInner() {
                           Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
                         </Text>
 
-                        {/* ✅ Use Field so it scrolls above keyboard on focus */}
+                        {/* ✅ These now scroll above keyboard correctly */}
                         <Field
                           label="Label"
                           value={uxLabel}
                           onChangeText={setUxLabel}
                           placeholder="Car repair"
-                          onFocusScrollToY={onChecklistFocusScrollToY}
+                          onFocusScrollToInput={scrollChecklistToInput}
                         />
 
                         <Field
@@ -1090,7 +1150,7 @@ function AppInner() {
                           onChangeText={setUxAmount}
                           keyboardType="numeric"
                           placeholder="0"
-                          onFocusScrollToY={onChecklistFocusScrollToY}
+                          onFocusScrollToInput={scrollChecklistToInput}
                         />
 
                         <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -1188,14 +1248,7 @@ function AppInner() {
                         }}
                       >
                         <Card>
-                          <View
-                            style={{
-                              flexDirection: "row",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              gap: 10,
-                            }}
-                          >
+                          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                             <View style={{ flex: 1 }}>
                               <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
                                 {idx === 0 ? "Current cycle" : `Cycle #${idx + 1}`} • {formatDate(c.payday)}
@@ -1242,10 +1295,14 @@ function AppInner() {
                           </View>
 
                           <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                            <TextBtn label="View details" onPress={() => {
-                              setHistorySelectedCycleId(c.id);
-                              setScreen("history_detail");
-                            }} kind="green" />
+                            <TextBtn
+                              label="View details"
+                              onPress={() => {
+                                setHistorySelectedCycleId(c.id);
+                                setScreen("history_detail");
+                              }}
+                              kind="green"
+                            />
                           </View>
                         </Card>
                       </Pressable>
@@ -1327,14 +1384,21 @@ function AppInner() {
                           <Divider />
 
                           <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                            <TextBtn label="Back to history" onPress={() => {
-                              setHistorySelectedCycleId(null);
-                              setScreen("history");
-                            }} />
-                            <TextBtn label="Checklist" onPress={() => {
-                              setHistorySelectedCycleId(null);
-                              setScreen("checklist");
-                            }} kind="green" />
+                            <TextBtn
+                              label="Back to history"
+                              onPress={() => {
+                                setHistorySelectedCycleId(null);
+                                setScreen("history");
+                              }}
+                            />
+                            <TextBtn
+                              label="Checklist"
+                              onPress={() => {
+                                setHistorySelectedCycleId(null);
+                                setScreen("checklist");
+                              }}
+                              kind="green"
+                            />
                           </View>
                         </Card>
 
@@ -1348,7 +1412,9 @@ function AppInner() {
                             <Divider />
 
                             {uxArr.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None recorded for this cycle.</Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                                None recorded for this cycle.
+                              </Text>
                             ) : (
                               <View style={{ gap: 10 }}>
                                 {uxArr.map((x) => (
@@ -1383,7 +1449,9 @@ function AppInner() {
                             <Divider />
 
                             {bills.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>No bills fell due in this cycle.</Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                                No bills fell due in this cycle.
+                              </Text>
                             ) : (
                               <>
                                 {billsPaid.length > 0 ? (
@@ -1475,7 +1543,7 @@ function AppInner() {
                                       ⬜ {i.label}
                                     </Text>
                                     <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                      {fmtMoney(i.amount)} • {i.category}
+                                      {fmtMoney(i.amount)} • {displayCategory(i.category)}
                                       {i.notes ? ` • ${i.notes}` : ""}
                                     </Text>
                                   </View>
@@ -1535,7 +1603,6 @@ function SettingsScreen({
   onFinishSetup: () => void;
 }) {
   const scrollRef = useRef<ScrollView>(null);
-
   const [local, setLocal] = useState<Settings>(settings);
 
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
@@ -1543,10 +1610,13 @@ function SettingsScreen({
 
   useEffect(() => setLocal(settings), [settings]);
 
-  const onFocusScrollToY = (y: number) => {
-    setTimeout(() => {
-      scrollRef.current?.scrollTo({ y, animated: true });
-    }, 60);
+  const scrollSettingsToInput = (inputRef: React.RefObject<TextInput>) => {
+    requestAnimationFrame(() => {
+      const node = findNodeHandle(inputRef.current);
+      const responder: any = scrollRef.current?.getScrollResponder?.();
+      if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
+      responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
+    });
   };
 
   function save() {
@@ -1586,6 +1656,7 @@ function SettingsScreen({
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
+  // Bills
   function updateBill(billId: string, patch: Partial<Bill>) {
     setLocal((s) => ({
       ...s,
@@ -1608,25 +1679,49 @@ function SettingsScreen({
     }));
   }
 
-  function addAllocation() {
+  // Paycheck Distributions (allocations)
+  function addDistribution() {
     const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
       ...s,
-      allocations: [...(s.allocations || []), { id, label: "New Allocation", amount: 0 }],
+      allocations: [...(s.allocations || []), { id, label: "New Distribution", amount: 0 }],
     }));
   }
 
-  function updateAllocation(id: string, patch: Partial<Allocation>) {
+  function updateDistribution(id: string, patch: Partial<Allocation>) {
     setLocal((s) => ({
       ...s,
       allocations: (s.allocations || []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
     }));
   }
 
-  function removeAllocation(id: string) {
+  function removeDistribution(id: string) {
     setLocal((s) => ({
       ...s,
       allocations: (s.allocations || []).filter((a) => a.id !== id),
+    }));
+  }
+
+  // Monthly items
+  function addMonthlyItem() {
+    const id = `monthly_${Date.now()}`;
+    setLocal((s) => ({
+      ...s,
+      monthlyItems: [...(s.monthlyItems || []), { id, label: "New Monthly Expense", amount: 0 }],
+    }));
+  }
+
+  function updateMonthlyItem(id: string, patch: Partial<MonthlyItem>) {
+    setLocal((s) => ({
+      ...s,
+      monthlyItems: (s.monthlyItems || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
+    }));
+  }
+
+  function removeMonthlyItem(id: string) {
+    setLocal((s) => ({
+      ...s,
+      monthlyItems: (s.monthlyItems || []).filter((m) => m.id !== id),
     }));
   }
 
@@ -1644,7 +1739,7 @@ function SettingsScreen({
     <ScrollView
       ref={scrollRef}
       keyboardShouldPersistTaps="handled"
-      contentContainerStyle={{ paddingBottom: 30 }}
+      contentContainerStyle={{ paddingBottom: 260 }}
       showsVerticalScrollIndicator={false}
     >
       <View style={{ gap: 12 }}>
@@ -1675,14 +1770,12 @@ function SettingsScreen({
             onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
             keyboardType="numeric"
             placeholder="0"
-            onFocusScrollToY={onFocusScrollToY}
+            onFocusScrollToInput={scrollSettingsToInput}
           />
 
           {shouldShowAnchor ? (
             <>
-              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>
-                Anchor payday
-              </Text>
+              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Anchor payday</Text>
 
               <Pressable
                 onPress={() => setShowAnchorPicker(true)}
@@ -1742,7 +1835,7 @@ function SettingsScreen({
                 }
                 keyboardType="numeric"
                 placeholder="1"
-                onFocusScrollToY={onFocusScrollToY}
+                onFocusScrollToInput={scrollSettingsToInput}
               />
               <Field
                 label="Twice-monthly payday #2 (1–28)"
@@ -1752,7 +1845,7 @@ function SettingsScreen({
                 }
                 keyboardType="numeric"
                 placeholder="15"
-                onFocusScrollToY={onFocusScrollToY}
+                onFocusScrollToInput={scrollSettingsToInput}
               />
             </>
           ) : null}
@@ -1766,7 +1859,7 @@ function SettingsScreen({
               }
               keyboardType="numeric"
               placeholder="1"
-              onFocusScrollToY={onFocusScrollToY}
+              onFocusScrollToInput={scrollSettingsToInput}
             />
           ) : null}
         </Card>
@@ -1785,14 +1878,15 @@ function SettingsScreen({
             onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
             keyboardType="numeric"
             placeholder="0"
-            onFocusScrollToY={onFocusScrollToY}
+            onFocusScrollToInput={scrollSettingsToInput}
           />
         </Card>
 
+        {/* Paycheck Distributions */}
         <Card>
-          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay-per allocations</Text>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-            Add or remove items that repeat every pay cycle (e.g., Savings, Investing, Fuel).
+            Items that repeat every pay cycle (e.g., Savings, Investing, Fuel).
           </Text>
 
           <Divider />
@@ -1809,59 +1903,86 @@ function SettingsScreen({
                   backgroundColor: "rgba(255,255,255,0.03)",
                 }}
               >
-                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Allocation</Text>
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                  Paycheck Distribution
+                </Text>
 
                 <Field
                   label="Label"
                   value={a.label}
-                  onChangeText={(s) => updateAllocation(a.id, { label: s })}
+                  onChangeText={(s) => updateDistribution(a.id, { label: s })}
                   placeholder="Savings"
-                  onFocusScrollToY={onFocusScrollToY}
+                  onFocusScrollToInput={scrollSettingsToInput}
                 />
                 <Field
                   label="Amount"
                   value={String(a.amount)}
-                  onChangeText={(s) => updateAllocation(a.id, { amount: safeParseNumber(s) })}
+                  onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
                   keyboardType="numeric"
                   placeholder="0"
-                  onFocusScrollToY={onFocusScrollToY}
+                  onFocusScrollToInput={scrollSettingsToInput}
                 />
 
                 <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                  <TextBtn label="Remove allocation" onPress={() => removeAllocation(a.id)} kind="red" />
+                  <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
                 </View>
               </View>
             ))}
 
-            <TextBtn label="Add allocation" onPress={addAllocation} />
+            <TextBtn label="Add distribution" onPress={addDistribution} />
           </View>
         </Card>
 
+        {/* Monthly Expenses (multiple) */}
         <Card>
-          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-            Still shows as ONE item in the checklist.
+            Add multiple monthly expenses. Each becomes its own checklist item.
           </Text>
 
           <Divider />
 
-          <Field
-            label="Monthly label (e.g., Rent / Groceries / Other)"
-            value={local.monthlyLabel}
-            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyLabel: s }))}
-            placeholder="Monthly Expense"
-            onFocusScrollToY={onFocusScrollToY}
-          />
-          <Field
-            label="Monthly amount"
-            value={String(local.monthlyAmount)}
-            onChangeText={(s) => setLocal((p) => ({ ...p, monthlyAmount: safeParseNumber(s) }))}
-            keyboardType="numeric"
-            placeholder="0"
-            onFocusScrollToY={onFocusScrollToY}
-          />
+          <View style={{ gap: 12 }}>
+            {(local.monthlyItems || []).map((m) => (
+              <View
+                key={m.id}
+                style={{
+                  borderWidth: 1,
+                  borderColor: COLORS.borderSoft,
+                  borderRadius: 16,
+                  padding: 12,
+                  backgroundColor: "rgba(255,255,255,0.03)",
+                }}
+              >
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
+
+                <Field
+                  label="Label"
+                  value={m.label}
+                  onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
+                  placeholder="Rent"
+                  onFocusScrollToInput={scrollSettingsToInput}
+                />
+                <Field
+                  label="Amount"
+                  value={String(m.amount)}
+                  onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  onFocusScrollToInput={scrollSettingsToInput}
+                />
+
+                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                  <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
+                </View>
+              </View>
+            ))}
+
+            <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
+          </View>
         </Card>
 
+        {/* Bills */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
           <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
@@ -1889,7 +2010,7 @@ function SettingsScreen({
                   value={b.name}
                   onChangeText={(s) => updateBill(b.id, { name: s })}
                   placeholder="Verizon"
-                  onFocusScrollToY={onFocusScrollToY}
+                  onFocusScrollToInput={scrollSettingsToInput}
                 />
                 <Field
                   label="Amount"
@@ -1897,7 +2018,7 @@ function SettingsScreen({
                   onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
                   keyboardType="numeric"
                   placeholder="0"
-                  onFocusScrollToY={onFocusScrollToY}
+                  onFocusScrollToInput={scrollSettingsToInput}
                 />
                 <Field
                   label="Due day (1–31)"
@@ -1905,7 +2026,7 @@ function SettingsScreen({
                   onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
                   keyboardType="numeric"
                   placeholder="1"
-                  onFocusScrollToY={onFocusScrollToY}
+                  onFocusScrollToInput={scrollSettingsToInput}
                 />
 
                 <View style={{ marginTop: 10, alignItems: "flex-start" }}>
