@@ -3,9 +3,21 @@
     "name": "Paycheck Buddy",
     "slug": "paycheck-buddy-mobile",
     "version": "1.0.0",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "android": {
       "package": "com.sunny.paycheckbuddy"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "4ea99672-94f9-43e5-aa29-0e29b856a5c5"
+      }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
   }
 }

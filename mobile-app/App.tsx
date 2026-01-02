@@ -24,17 +24,15 @@ import {
  * - Checklist remains: categories, checkboxes, per-cycle
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
  *
- * ✅ FIXES APPLIED:
- * 1) Proper Safe Area handling for Android (Fold devices) using react-native-safe-area-context
- * 2) Header padding respects top inset so it won't be cut off by the status bar
- * 3) StatusBar set to translucent with transparent background
- * 4) ScrollView content includes extra top padding so content doesn't clip
+ * ✅ NEW FIXES:
+ * 1) Real first-time launch setup screen (gated by hasCompletedSetup)
+ * 2) Schema versioning — can force a clean start when you change logic/defaults
+ * 3) Defaults set to ZERO (no phantom prefilled amounts)
  */
 
 /** -------------------- Types -------------------- */
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
-
 type Category = "Bills" | "Monthly" | "Savings" | "Investing" | "Fuel" | "Debt";
 
 type Bill = {
@@ -47,84 +45,76 @@ type Bill = {
 type Settings = {
   payFrequency: PayFrequency;
 
-  // Pay amount per pay event:
-  // - weekly: payAmount = weekly paycheck
-  // - biweekly: payAmount = bi-weekly paycheck
-  // - twice-monthly: payAmount = each paycheck amount
-  // - monthly: payAmount = monthly income amount (single pay event)
   payAmount: number;
+  anchorISO: string;
 
-  // Anchor date used for weekly/biweekly schedule (first payday)
-  // For twice-monthly/monthly we use day-of-month settings instead
-  anchorISO: string; // ISO date string
-
-  // Twice-monthly paydays (e.g., 1st and 15th)
   twiceMonthlyDay1: number; // 1–28
   twiceMonthlyDay2: number; // 1–28
-
-  // Monthly payday (e.g., 1st)
   monthlyPayDay: number; // 1–28
 
-  // Bills
   bills: Bill[];
 
-  // Monthly expense (single item)
-  monthlyLabel: string; // e.g. "Rent" / "Groceries" / "Other"
+  monthlyLabel: string;
   monthlyAmount: number;
 
-  // Per-pay allocations (repeat each pay event)
   savingsPerPay: number;
   investingPerPay: number;
   fuelPerPay: number;
 
-  // Total debt (one number)
   debtRemaining: number;
 };
 
 type CheckedState = Record<string, { checked: boolean; at?: string }>;
 
 type Cycle = {
-  id: string; // stable id for this cycle (used to avoid double-subtract debt)
-  label: string; // display label
+  id: string;
+  label: string;
   start: Date;
   end: Date;
-  payday: Date; // "cycle payday" for display
+  payday: Date;
 };
 
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v1";
+// IMPORTANT:
+// - If you ever need to force everyone to re-run setup (or wipe old restored data),
+//   bump SCHEMA_VERSION by +1.
+// - This also fixes "Android restored my old data after reinstall" problems in practice.
+const STORAGE_KEY = "pb_mobile_v2";
+const SCHEMA_VERSION = 2;
 
 type Persisted = {
+  schemaVersion: number;
+  hasCompletedSetup: boolean;
+
   settings: Settings;
-  checkedByCycle: Record<string, CheckedState>; // cycleId -> checked state
-  appliedDebtCycles: Record<string, boolean>; // cycleId -> debt applied?
+  checkedByCycle: Record<string, CheckedState>;
+  appliedDebtCycles: Record<string, boolean>;
   activeCycleId?: string;
 };
 
+// ✅ Defaults set to ZERO (as you requested)
 const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
-  payAmount: 3313,
-  // default anchor: Jan 9, 2026 (matching your web app)
+  payAmount: 0,
+
+  // anchor can be anything valid; user can change in setup/settings
   anchorISO: "2026-01-09T00:00:00-05:00",
+
   twiceMonthlyDay1: 1,
   twiceMonthlyDay2: 15,
   monthlyPayDay: 1,
 
-  bills: [
-    { id: "bill_tmobile", name: "T-Mobile", amount: 95, dueDay: 2 },
-    { id: "bill_verizon", name: "Verizon", amount: 95, dueDay: 25 },
-    { id: "bill_statefarm", name: "State Farm", amount: 270, dueDay: 16 },
-  ],
+  bills: [],
 
   monthlyLabel: "Rent",
   monthlyAmount: 0,
 
-  savingsPerPay: 500,
-  investingPerPay: 200,
-  fuelPerPay: 500,
+  savingsPerPay: 0,
+  investingPerPay: 0,
+  fuelPerPay: 0,
 
-  debtRemaining: 33300,
+  debtRemaining: 0,
 });
 
 const safeParseNumber = (s: string) => {
@@ -172,37 +162,20 @@ const COLORS = {
   faint: "rgba(185,193,204,0.58)",
   border: "rgba(255,255,255,0.12)",
   borderSoft: "rgba(255,255,255,0.09)",
-  glassA: "rgba(255,255,255,0.085)",
   glassB: "rgba(255,255,255,0.045)",
-  glassC: "rgba(255,255,255,0.03)",
   green: "rgba(34,197,94,1)",
-  greenSoft: "rgba(34,197,94,0.16)",
-  redSoft: "rgba(248,113,113,0.14)",
 };
 
 const TYPE = {
   h1: { fontSize: 18, fontWeight: "900" as const },
   h2: { fontSize: 14, fontWeight: "900" as const },
   label: { fontSize: 12, fontWeight: "800" as const },
-  valueLg: { fontSize: 22, fontWeight: "900" as const },
-  valueMd: { fontSize: 16, fontWeight: "900" as const },
   body: { fontSize: 13, fontWeight: "600" as const },
 };
 
 /** -------------------- Schedule engine (all 4 options) -------------------- */
 
-/**
- * We compute a "current cycle" based on pay frequency.
- * - weekly: cycles are 7 days anchored by anchorISO
- * - biweekly: cycles are 14 days anchored by anchorISO
- * - twice-monthly: cycles based on two days-of-month (d1, d2)
- * - monthly: cycles based on one day-of-month
- *
- * Each cycle gets a stable ID so we can avoid re-applying debt reduction.
- */
-
 function cycleIdFromDate(prefix: string, d: Date) {
-  // stable YYYY-MM-DD
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -219,7 +192,7 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
     const a = anchor.getTime();
     const idx = t < a ? 0 : Math.floor((t - a) / msStep);
     const payday = startOfDay(new Date(a + idx * msStep));
-    const start = payday; // cycle starts on payday
+    const start = payday;
     const end = addDays(start, settings.payFrequency === "weekly" ? 6 : 13);
     const id = cycleIdFromDate(settings.payFrequency, payday);
     const label =
@@ -241,10 +214,8 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
     const payA = startOfDay(new Date(year, month, dayA));
     const payB = startOfDay(new Date(year, month, dayB));
 
-    // Determine most recent payday (A or B) not after today
     let payday: Date;
     if (n.getTime() < payA.getTime()) {
-      // go to previous month B
       const prevMonth = new Date(year, month - 1, 1);
       payday = startOfDay(new Date(prevMonth.getFullYear(), prevMonth.getMonth(), dayB));
     } else if (n.getTime() < payB.getTime()) {
@@ -254,7 +225,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
     }
 
     const start = payday;
-    // end = day before next payday
     let nextPayday: Date;
     if (payday.getDate() === dayA) nextPayday = payB;
     else {
@@ -268,7 +238,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
     return { id, label, start, end, payday };
   }
 
-  // monthly
   const day = clamp(settings.monthlyPayDay || 1, 1, 28);
   const year = n.getFullYear();
   const month = n.getMonth();
@@ -294,12 +263,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
 
 /** -------------------- Smart bill assignment (dueDay -> cycle) -------------------- */
 
-/**
- * For the CURRENT cycle, a bill belongs to this cycle if:
- * - its due date for the month falls within cycle.start..cycle.end
- *
- * This works for weekly/biweekly too.
- */
 function billDueDateForMonth(bill: Bill, ref: Date) {
   const year = ref.getFullYear();
   const month = ref.getMonth();
@@ -326,10 +289,8 @@ type ChecklistItem = {
 function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem[] {
   const items: ChecklistItem[] = [];
 
-  // Bills: include bills whose due date in the active cycle range
   for (const bill of settings.bills || []) {
     const due = billDueDateForMonth(bill, cycle.start);
-    // if cycle crosses months, check due date for both months
     const due2 = billDueDateForMonth(bill, cycle.end);
 
     const inThisCycle =
@@ -347,7 +308,6 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     }
   }
 
-  // Monthly: single item that can represent any monthly expense type
   if ((settings.monthlyAmount || 0) > 0) {
     items.push({
       id: "monthly_single",
@@ -358,7 +318,6 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     });
   }
 
-  // Per-pay repeats
   if ((settings.savingsPerPay || 0) > 0) {
     items.push({
       id: "save_perpay",
@@ -389,23 +348,20 @@ function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem
     });
   }
 
-  // Debt item is auto-calculated as remainder
   items.push({
     id: "debt_paydown",
     label: "Debt Paydown",
-    amount: 0, // computed later
+    amount: 0,
     category: "Debt",
     notes: "Auto-calculated remainder",
   });
 
-  // Calculate debt paydown = payAmount - everything else
   const nonDebtTotal = items
     .filter((i) => i.id !== "debt_paydown")
     .reduce((sum, i) => sum + (i.amount || 0), 0);
 
   const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal);
 
-  // Put computed amount
   return items.map((i) => (i.id === "debt_paydown" ? { ...i, amount: debtPay } : i));
 }
 
@@ -446,26 +402,16 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Chip({ children }: { children: React.ReactNode }) {
+function Divider() {
   return (
     <View
       style={{
-        alignSelf: "flex-start",
-        paddingVertical: 6,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: COLORS.borderSoft,
-        backgroundColor: "rgba(255,255,255,0.06)",
+        height: 1,
+        backgroundColor: "rgba(255,255,255,0.10)",
+        marginVertical: 10,
       }}
-    >
-      <Text style={{ color: COLORS.text, fontWeight: "800" }}>{children}</Text>
-    </View>
+    />
   );
-}
-
-function Divider() {
-  return <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.10)", marginVertical: 10 }} />;
 }
 
 function TextBtn({
@@ -563,20 +509,24 @@ function AppInner() {
   const [screen, setScreen] = useState<Screen>("checklist");
 
   const [loaded, setLoaded] = useState(false);
-  const [settings, setSettings] = useState<Settings>(defaultSettings());
 
+  const [hasCompletedSetup, setHasCompletedSetup] = useState(false);
+
+  const [settings, setSettings] = useState<Settings>(defaultSettings());
   const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
   const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
 
   const cycle = useMemo(() => getCurrentCycle(settings, new Date()), [settings]);
   const activeChecked = checkedByCycle[cycle.id] ?? {};
-
   const items = useMemo(() => buildChecklistForCycle(settings, cycle), [settings, cycle]);
   const grouped = useMemo(() => groupByCategory(items), [items]);
 
   const totals = useMemo(() => {
     const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
-    const done = items.reduce((sum, i) => (activeChecked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+    const done = items.reduce(
+      (sum, i) => (activeChecked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+      0
+    );
     const itemsTotal = items.length;
     const itemsDone = items.filter((i) => activeChecked[i.id]?.checked).length;
     const pct = itemsTotal ? Math.round((itemsDone / itemsTotal) * 100) : 0;
@@ -590,11 +540,27 @@ function AppInner() {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as Persisted;
-          if (parsed?.settings) setSettings(parsed.settings);
-          if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
-          if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
+
+          // ✅ If schema changed or setup not completed, treat as "first launch"
+          if (parsed?.schemaVersion === SCHEMA_VERSION && parsed?.settings) {
+            setSettings(parsed.settings);
+            setCheckedByCycle(parsed.checkedByCycle || {});
+            setAppliedDebtCycles(parsed.appliedDebtCycles || {});
+            setHasCompletedSetup(!!parsed.hasCompletedSetup);
+          } else {
+            // schema mismatch: wipe to defaults + require setup
+            setSettings(defaultSettings());
+            setCheckedByCycle({});
+            setAppliedDebtCycles({});
+            setHasCompletedSetup(false);
+          }
+        } else {
+          // no storage: first launch
+          setHasCompletedSetup(false);
         }
-      } catch {}
+      } catch {
+        setHasCompletedSetup(false);
+      }
       setLoaded(true);
     })();
   }, []);
@@ -603,13 +569,15 @@ function AppInner() {
   useEffect(() => {
     if (!loaded) return;
     const data: Persisted = {
+      schemaVersion: SCHEMA_VERSION,
+      hasCompletedSetup,
       settings,
       checkedByCycle,
       appliedDebtCycles,
       activeCycleId: cycle.id,
     };
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
-  }, [loaded, settings, checkedByCycle, appliedDebtCycles, cycle.id]);
+  }, [loaded, hasCompletedSetup, settings, checkedByCycle, appliedDebtCycles, cycle.id]);
 
   function toggleItem(id: string) {
     setCheckedByCycle((prev) => {
@@ -623,9 +591,9 @@ function AppInner() {
   }
 
   // Auto-decrease debtRemaining when debt_paydown transitions to checked (once per cycle)
-  const lastDebtAppliedRef = useRef<Record<string, boolean>>({});
   useEffect(() => {
     if (!loaded) return;
+    if (!hasCompletedSetup) return;
 
     const debtItem = items.find((i) => i.id === "debt_paydown");
     if (!debtItem) return;
@@ -633,7 +601,6 @@ function AppInner() {
     const debtChecked = !!activeChecked["debt_paydown"]?.checked;
     const alreadyApplied = !!appliedDebtCycles[cycle.id];
 
-    // We only apply if checked and not applied yet
     if (debtChecked && !alreadyApplied) {
       const payAmount = debtItem.amount || 0;
 
@@ -644,41 +611,20 @@ function AppInner() {
 
       setAppliedDebtCycles((p) => ({ ...p, [cycle.id]: true }));
     }
-
-    // If user unchecks later, we do NOT auto-add it back (to avoid complexity).
-    // If you want "undo" later, we can implement it.
-  }, [loaded, activeChecked, appliedDebtCycles, cycle.id, items]);
-
-  function resetThisCycle() {
-    Alert.alert("Reset", "Reset this cycle checklist?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Reset",
-        style: "destructive",
-        onPress: () => {
-          setCheckedByCycle((prev) => {
-            const next = { ...prev };
-            next[cycle.id] = {};
-            return next;
-          });
-          // We do NOT reset appliedDebtCycles automatically.
-          // If you reset after applying debt, you would otherwise double-apply later.
-        },
-      },
-    ]);
-  }
+  }, [loaded, hasCompletedSetup, activeChecked, appliedDebtCycles, cycle.id, items]);
 
   function resetEverything() {
-    Alert.alert("Reset ALL", "This clears all saved data and restores defaults. Continue?", [
+    Alert.alert("Reset ALL", "This clears all saved data and returns to setup. Continue?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Reset ALL",
         style: "destructive",
         onPress: async () => {
-          const fresh = defaultSettings();
-          setSettings(fresh);
+          setSettings(defaultSettings());
           setCheckedByCycle({});
           setAppliedDebtCycles({});
+          setHasCompletedSetup(false);
+          setScreen("checklist");
           try {
             await AsyncStorage.removeItem(STORAGE_KEY);
           } catch {}
@@ -687,16 +633,68 @@ function AppInner() {
     ]);
   }
 
+  // ✅ First time launch gate
+  if (!loaded) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+        <View style={{ flex: 1, justifyContent: "center", alignItems: "center", padding: 20 }}>
+          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Loading…</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!hasCompletedSetup) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+        <View
+          style={{
+            flex: 1,
+            paddingHorizontal: 16,
+            paddingTop: 10,
+            paddingBottom: 14 + insets.bottom,
+            backgroundColor: COLORS.bg,
+          }}
+        >
+          <View style={{ paddingTop: Math.max(0, insets.top) }}>
+            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome to Paycheck Buddy</Text>
+            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+              Let’s set up your pay schedule and expenses.
+            </Text>
+          </View>
+
+          <ScrollView style={{ marginTop: 12 }} contentContainerStyle={{ paddingBottom: 30 }}>
+            <SettingsScreen
+              settings={settings}
+              onChange={(s) => setSettings(s)}
+              onBack={() => {}}
+              mode="setup"
+              onFinishSetup={() => {
+                setHasCompletedSetup(true);
+                setScreen("checklist");
+              }}
+            />
+
+            <View style={{ marginTop: 12 }}>
+              <TextBtn label="Reset ALL (start over)" onPress={resetEverything} kind="red" />
+            </View>
+          </ScrollView>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Normal app UI
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-      {/* ✅ Prevent content under status bar (Fold fix) */}
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
       <View
         style={{
           flex: 1,
           paddingHorizontal: 16,
-          // ✅ header + content now respects the top inset
           paddingTop: 10,
           paddingBottom: 14 + insets.bottom,
           backgroundColor: COLORS.bg,
@@ -709,7 +707,6 @@ function AppInner() {
             justifyContent: "space-between",
             alignItems: "center",
             gap: 10,
-            // ✅ add inset so "Paycheck Buddy" never clips on Fold status bar
             paddingTop: Math.max(0, insets.top),
           }}
         >
@@ -731,16 +728,11 @@ function AppInner() {
 
         <ScrollView
           style={{ marginTop: 12 }}
-          contentContainerStyle={{
-            paddingBottom: 30,
-            // ✅ a little breathing room under the header on devices with big insets
-            paddingTop: 2,
-          }}
+          contentContainerStyle={{ paddingBottom: 30, paddingTop: 2 }}
           showsVerticalScrollIndicator={false}
         >
           {screen === "checklist" ? (
             <>
-              {/* Summary */}
               <Card>
                 <Text style={{ color: COLORS.muted, ...TYPE.body }}>
                   {cycle.label} • Payday:{" "}
@@ -749,103 +741,89 @@ function AppInner() {
 
                 <Divider />
 
-                <View style={{ gap: 10 }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
-                    <Chip>{fmtMoney(settings.payAmount)}</Chip>
-                  </View>
-
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
-                    <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
-                  </View>
-
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
-                    <Chip>{fmtMoney(totals.planned)}</Chip>
-                  </View>
-
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
-                    <Chip>{fmtMoney(totals.done)}</Chip>
-                  </View>
-
-                  <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                    Progress:{" "}
-                    <Text style={{ color: COLORS.textStrong }}>
-                      {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
-                    </Text>
-                  </Text>
-                </View>
+                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                  Pay amount: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.payAmount)}</Text>
+                </Text>
+                <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
+                  Debt remaining:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>{fmtMoney(settings.debtRemaining)}</Text>
+                </Text>
 
                 <Divider />
 
-                <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                  <TextBtn label="Reset this cycle" onPress={resetThisCycle} />
-                  <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
-                </View>
+                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                  Planned: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(totals.planned)}</Text>
+                </Text>
+                <Text style={{ color: COLORS.muted, fontWeight: "700", marginTop: 6 }}>
+                  Completed: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(totals.done)}</Text>
+                </Text>
+
+                <Text style={{ color: COLORS.muted, marginTop: 8, fontWeight: "700" }}>
+                  Progress:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>
+                    {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                  </Text>
+                </Text>
+
+                <Divider />
+
+                <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
               </Card>
 
-              {/* Checklist */}
               <View style={{ marginTop: 12, gap: 12 }}>
-                {grouped.map(([cat, catItems]) => {
-                  const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
-                  return (
-                    <Card key={cat}>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
-                        <Chip>{fmtMoney(plannedForCat)} planned</Chip>
-                      </View>
+                {grouped.map(([cat, catItems]) => (
+                  <Card key={cat}>
+                    <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
+                    <Divider />
+                    <View style={{ gap: 10 }}>
+                      {catItems.map((it) => {
+                        const state = activeChecked[it.id];
+                        const isChecked = !!state?.checked;
 
-                      <Divider />
-
-                      <View style={{ gap: 10 }}>
-                        {catItems.map((it) => {
-                          const state = activeChecked[it.id];
-                          const isChecked = !!state?.checked;
-
-                          return (
-                            <Pressable
-                              key={it.id}
-                              onPress={() => toggleItem(it.id)}
-                              style={{
-                                padding: 12,
-                                borderRadius: 16,
-                                borderWidth: 1,
-                                borderColor: COLORS.borderSoft,
-                                backgroundColor: isChecked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
-                              }}
-                            >
-                              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
-                                <View style={{ flex: 1 }}>
-                                  <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                    {isChecked ? "✅ " : "⬜ "} {it.label}
-                                  </Text>
-                                  <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                    {fmtMoney(it.amount)}
-                                    {it.notes ? ` • ${it.notes}` : ""}
-                                    {isChecked && state?.at
-                                      ? ` • checked ${new Date(state.at).toLocaleString()}`
-                                      : ""}
-                                  </Text>
-                                </View>
-                                <Chip>{fmtMoney(it.amount)}</Chip>
-                              </View>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </Card>
-                  );
-                })}
+                        return (
+                          <Pressable
+                            key={it.id}
+                            onPress={() => toggleItem(it.id)}
+                            style={{
+                              padding: 12,
+                              borderRadius: 16,
+                              borderWidth: 1,
+                              borderColor: "rgba(255,255,255,0.09)",
+                              backgroundColor: isChecked
+                                ? "rgba(34,197,94,0.14)"
+                                : "rgba(255,255,255,0.03)",
+                            }}
+                          >
+                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                              {isChecked ? "✅ " : "⬜ "} {it.label}
+                            </Text>
+                            <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                              {fmtMoney(it.amount)}
+                              {it.notes ? ` • ${it.notes}` : ""}
+                              {isChecked && state?.at
+                                ? ` • checked ${new Date(state.at).toLocaleString()}`
+                                : ""}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  </Card>
+                ))}
               </View>
 
-              <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+              <Text style={{ color: "rgba(185,193,204,0.58)", marginTop: 14, textAlign: "center", fontWeight: "700" }}>
                 Offline • Saved on-device
               </Text>
             </>
           ) : (
-            <SettingsScreen settings={settings} onChange={setSettings} onBack={() => setScreen("checklist")} />
+            <SettingsScreen
+              settings={settings}
+              onChange={setSettings}
+              onBack={() => setScreen("checklist")}
+              mode="normal"
+              onFinishSetup={() => {}}
+            />
           )}
         </ScrollView>
       </View>
@@ -859,41 +837,38 @@ function SettingsScreen({
   settings,
   onChange,
   onBack,
+  mode,
+  onFinishSetup,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   onBack: () => void;
+  mode: "setup" | "normal";
+  onFinishSetup: () => void;
 }) {
   const [local, setLocal] = useState<Settings>(settings);
 
   useEffect(() => setLocal(settings), [settings]);
 
   function save() {
-    // Basic validation
-    if (local.payAmount < 0) {
-      Alert.alert("Invalid", "Pay amount must be >= 0");
-      return;
-    }
-    if (local.debtRemaining < 0) {
-      Alert.alert("Invalid", "Debt remaining must be >= 0");
-      return;
-    }
-    if (local.twiceMonthlyDay1 < 1 || local.twiceMonthlyDay1 > 28) {
-      Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
-      return;
-    }
-    if (local.twiceMonthlyDay2 < 1 || local.twiceMonthlyDay2 > 28) {
-      Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
-      return;
-    }
-    if (local.monthlyPayDay < 1 || local.monthlyPayDay > 28) {
-      Alert.alert("Invalid", "Monthly payday must be 1–28");
-      return;
-    }
+    if (local.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
+    if (local.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
+    if (local.twiceMonthlyDay1 < 1 || local.twiceMonthlyDay1 > 28)
+      return Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
+    if (local.twiceMonthlyDay2 < 1 || local.twiceMonthlyDay2 > 28)
+      return Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
+    if (local.monthlyPayDay < 1 || local.monthlyPayDay > 28)
+      return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
     onChange(local);
-    Alert.alert("Saved", "Settings saved to device.");
-    onBack();
+
+    if (mode === "setup") {
+      Alert.alert("Saved", "Setup complete.");
+      onFinishSetup();
+    } else {
+      Alert.alert("Saved", "Settings saved to device.");
+      onBack();
+    }
   }
 
   function setFreq(f: PayFrequency) {
@@ -955,7 +930,7 @@ function SettingsScreen({
           value={String(local.payAmount)}
           onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
           keyboardType="numeric"
-          placeholder="3313"
+          placeholder="0"
         />
 
         {local.payFrequency === "weekly" || local.payFrequency === "biweekly" ? (
@@ -966,8 +941,8 @@ function SettingsScreen({
               onChangeText={(s) => setLocal((p) => ({ ...p, anchorISO: s }))}
               placeholder="2026-01-09T00:00:00-05:00"
             />
-            <Text style={{ color: COLORS.faint, marginTop: 6, fontWeight: "700" }}>
-              Tip: keep this as your first payday date. Cycles repeat from here.
+            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+              Tip: set this to your first payday date. Cycles repeat from here.
             </Text>
           </>
         ) : null}
@@ -996,17 +971,15 @@ function SettingsScreen({
         ) : null}
 
         {local.payFrequency === "monthly" ? (
-          <>
-            <Field
-              label="Monthly payday (1–28)"
-              value={String(local.monthlyPayDay)}
-              onChangeText={(s) =>
-                setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
-              }
-              keyboardType="numeric"
-              placeholder="1"
-            />
-          </>
+          <Field
+            label="Monthly payday (1–28)"
+            value={String(local.monthlyPayDay)}
+            onChangeText={(s) =>
+              setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
+            }
+            keyboardType="numeric"
+            placeholder="1"
+          />
         ) : null}
       </Card>
 
@@ -1023,7 +996,7 @@ function SettingsScreen({
           value={String(local.debtRemaining)}
           onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
           keyboardType="numeric"
-          placeholder="33300"
+          placeholder="0"
         />
 
         <Divider />
@@ -1035,28 +1008,28 @@ function SettingsScreen({
           value={String(local.savingsPerPay)}
           onChangeText={(s) => setLocal((p) => ({ ...p, savingsPerPay: safeParseNumber(s) }))}
           keyboardType="numeric"
-          placeholder="500"
+          placeholder="0"
         />
         <Field
           label="Investing per pay"
           value={String(local.investingPerPay)}
           onChangeText={(s) => setLocal((p) => ({ ...p, investingPerPay: safeParseNumber(s) }))}
           keyboardType="numeric"
-          placeholder="200"
+          placeholder="0"
         />
         <Field
           label="Fuel per pay"
           value={String(local.fuelPerPay)}
           onChangeText={(s) => setLocal((p) => ({ ...p, fuelPerPay: safeParseNumber(s) }))}
           keyboardType="numeric"
-          placeholder="500"
+          placeholder="0"
         />
       </Card>
 
       <Card>
         <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
         <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-          Select what “Monthly” represents. It still shows as ONE item in the checklist.
+          This still shows as ONE item in the checklist.
         </Text>
 
         <Divider />
@@ -1090,7 +1063,7 @@ function SettingsScreen({
               key={b.id}
               style={{
                 borderWidth: 1,
-                borderColor: COLORS.borderSoft,
+                borderColor: "rgba(255,255,255,0.09)",
                 borderRadius: 16,
                 padding: 12,
                 backgroundColor: "rgba(255,255,255,0.03)",
@@ -1098,20 +1071,18 @@ function SettingsScreen({
             >
               <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Bill</Text>
 
-              <Field label="Name" value={b.name} onChangeText={(s) => updateBill(b.id, { name: s })} placeholder="Verizon" />
+              <Field label="Name" value={b.name} onChangeText={(s) => updateBill(b.id, { name: s })} />
               <Field
                 label="Amount"
                 value={String(b.amount)}
                 onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
                 keyboardType="numeric"
-                placeholder="95"
               />
               <Field
                 label="Due day (1–31)"
                 value={String(b.dueDay)}
                 onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
                 keyboardType="numeric"
-                placeholder="25"
               />
 
               <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -1125,11 +1096,11 @@ function SettingsScreen({
       </Card>
 
       <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-        <TextBtn label="Save settings" onPress={save} kind="green" />
-        <TextBtn label="Back" onPress={onBack} />
+        <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
+        {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
       </View>
 
-      <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
+      <Text style={{ color: "rgba(185,193,204,0.58)", marginTop: 10, textAlign: "center", fontWeight: "700" }}>
         Offline • Saved on-device
       </Text>
     </View>
