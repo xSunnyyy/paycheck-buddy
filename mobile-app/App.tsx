@@ -1050,7 +1050,8 @@ function AppInner() {
               <>
                 <Card>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <TextBtn label="Prev" onPress={() => setCycleOffset((o) => o - 1)} disabled={false} />
+                    <TextBtn label="◀︎" onPress={() => setCycleOffset((o) => o - 1)} 
+                  />
                     <View style={{ alignItems: "center", flex: 1 }}>
                       <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
                         {cycleOffset === 0
@@ -1059,11 +1060,18 @@ function AppInner() {
                           ? `Next +${cycleOffset}`
                           : `Prev ${cycleOffset}`}
                       </Text>
-                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" }}>
-                        {viewCycle.label} • Payday {formatDate(viewCycle.payday)}
+                      <Text
+                        style={{
+                          color: COLORS.muted,
+                          marginTop: 4,
+                          fontWeight: "700",
+                          textAlign: "center",
+                        }}
+                      >
+                        Payday {formatDate(viewCycle.payday)}
                       </Text>
                     </View>
-                    <TextBtn label="Next" onPress={() => setCycleOffset((o) => o + 1)} />
+                    <TextBtn label="▶︎" onPress={() => setCycleOffset((o) => o + 1)} />
                   </View>
 
                   {cycleOffset !== 0 ? (
