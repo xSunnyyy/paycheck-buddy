@@ -11,9 +11,12 @@ import {
   StatusBar,
   KeyboardAvoidingView,
   findNodeHandle,
+  Modal,
+  Keyboard,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DateTimePicker from "@react-native-community/datetimepicker";
+import Svg, { Circle } from "react-native-svg";
 import {
   SafeAreaProvider,
   SafeAreaView,
@@ -28,20 +31,20 @@ import {
  * - Paycheck Distributions (per-pay)
  * - Personal Spending (per-pay)
  * - Monthly Expenses list (multiple) with dueDay + cycle assignment like bills
- * - Scroll focused inputs above keyboard (Settings + Dashboard + Unexpected)
+ * - Scroll focused inputs above keyboard (Settings + Dashboard)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
- * - Unexpected Expenses per-cycle (collapsible) on dashboard
+ * - Unexpected Expenses per-cycle
  * - History: last 10 cycles + detail view
  * - Cycle navigation: Prev / This / Next
  *
  * ✅ UX:
  * - Due day input allows deleting/typing (no forced "1")
  * - New Bill/Monthly/Distribution/Personal start with EMPTY name
- * - Top nav centered: Dashboard / History / Settings
- *
- * ✅ Requested changes:
- * - App name shown in setup renamed to PayFlow
- * - Remove "Reset ALL" from Dashboard summary (keep only in Settings bottom)
+ * - Top nav centered
+ * - NEW: Segmented top nav (Dashboard/History/Settings)
+ * - NEW: Hero summary redesign + progress ring
+ * - NEW: Modern list rows
+ * - NEW: Unexpected expense bottom sheet modal (keyboard safe)
  */
 
 /** -------------------- Types -------------------- */
@@ -623,6 +626,252 @@ function Field({
   );
 }
 
+/** -------------------- NEW: Segmented Nav (Impact #1) -------------------- */
+
+function SegmentedNav({
+  value,
+  onChange,
+}: {
+  value: "dashboard" | "history" | "settings";
+  onChange: (v: "dashboard" | "history" | "settings") => void;
+}) {
+  const tabs: { key: "dashboard" | "history" | "settings"; label: string }[] = [
+    { key: "dashboard", label: "Dashboard" },
+    { key: "history", label: "History" },
+    { key: "settings", label: "Settings" },
+  ];
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        padding: 4,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "rgba(255,255,255,0.05)",
+      }}
+    >
+      {tabs.map((t) => {
+        const active = value === t.key;
+        return (
+          <Pressable
+            key={t.key}
+            onPress={() => onChange(t.key)}
+            style={{
+              flex: 1,
+              paddingVertical: 10,
+              borderRadius: 999,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: active ? "rgba(34,197,94,0.20)" : "transparent",
+              borderWidth: active ? 1 : 0,
+              borderColor: active ? "rgba(34,197,94,0.35)" : "transparent",
+            }}
+          >
+            <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 13 }}>
+              {t.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** -------------------- NEW: Progress Ring (Impact #5) -------------------- */
+
+function ProgressRing({
+  pct,
+  size = 56,
+  stroke = 6,
+}: {
+  pct: number;
+  size?: number;
+  stroke?: number;
+}) {
+  const p = clamp(Number.isFinite(pct) ? pct : 0, 0, 100);
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const dash = (p / 100) * c;
+
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <Svg width={size} height={size}>
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="rgba(255,255,255,0.12)"
+          strokeWidth={stroke}
+          fill="transparent"
+        />
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke="rgba(34,197,94,0.95)"
+          strokeWidth={stroke}
+          fill="transparent"
+          strokeLinecap="round"
+          strokeDasharray={`${dash} ${c - dash}`}
+          rotation={-90}
+          originX={size / 2}
+          originY={size / 2}
+        />
+      </Svg>
+      <Text style={{ position: "absolute", color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>
+        {p}%
+      </Text>
+    </View>
+  );
+}
+
+/** -------------------- NEW: Modern List Row (Impact #3) -------------------- */
+
+function ListRow({
+  title,
+  subtitle,
+  amount,
+  checked,
+  onPress,
+}: {
+  title: string;
+  subtitle?: string;
+  amount: string;
+  checked: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{
+        paddingVertical: 12,
+        paddingHorizontal: 12,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
+        backgroundColor: checked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 999,
+            borderWidth: 1,
+            borderColor: checked ? "rgba(34,197,94,0.70)" : "rgba(255,255,255,0.20)",
+            backgroundColor: checked ? "rgba(34,197,94,0.20)" : "transparent",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>
+            {checked ? "✓" : ""}
+          </Text>
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{title}</Text>
+          {subtitle ? (
+            <Text style={{ color: COLORS.muted, marginTop: 3, fontWeight: "700", fontSize: 12 }}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+
+        <View style={{ alignItems: "flex-end" }}>
+          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{amount}</Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+/** -------------------- NEW: Bottom Sheet (Impact #4) -------------------- */
+
+function BottomSheet({
+  visible,
+  onClose,
+  title,
+  children,
+  bottomInset = 0,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+  bottomInset?: number;
+}) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable
+        onPress={onClose}
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.55)",
+        }}
+      />
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={0}
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+        }}
+      >
+        <View
+          style={{
+            borderTopLeftRadius: 22,
+            borderTopRightRadius: 22,
+            borderWidth: 1,
+            borderColor: COLORS.border,
+            backgroundColor: COLORS.bg,
+            paddingBottom: 12 + bottomInset,
+            maxHeight: "88%",
+          }}
+        >
+          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
+            <View
+              style={{
+                alignSelf: "center",
+                width: 44,
+                height: 5,
+                borderRadius: 999,
+                backgroundColor: "rgba(255,255,255,0.18)",
+                marginBottom: 10,
+              }}
+            />
+
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{title}</Text>
+              <TextBtn label="Close" onPress={onClose} />
+            </View>
+          </View>
+
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            style={{ marginTop: 10 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 20 }}
+            showsVerticalScrollIndicator={false}
+          >
+            {children}
+          </ScrollView>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 /** -------------------- App -------------------- */
 
 type Screen = "dashboard" | "settings" | "history" | "history_detail";
@@ -725,19 +974,11 @@ function AppInner() {
     });
   };
 
-  const scrollDashboardToEnd = () => {
-    requestAnimationFrame(() => {
-      dashboardScrollRef.current?.scrollToEnd({ animated: true });
-    });
-  };
-
-  const [unexpectedOpen, setUnexpectedOpen] = useState(false);
+  const [unexpectedSheetOpen, setUnexpectedSheetOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
 
-  const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(
-    null
-  );
+  const [historySelectedCycleId, setHistorySelectedCycleId] = useState<string | null>(null);
 
   const now = new Date();
 
@@ -797,13 +1038,14 @@ function AppInner() {
 
     setUxLabel("");
     setUxAmount("");
-    setUnexpectedOpen(false);
+    setUnexpectedSheetOpen(false);
+    Keyboard.dismiss();
   }
 
-  function removeUnexpected(id: string) {
+  function removeUnexpected(cycleId: string, id: string) {
     setUnexpectedByCycle((prev) => {
       const next = { ...prev };
-      next[viewCycle.id] = (next[viewCycle.id] ?? []).filter((x) => x.id !== id);
+      next[cycleId] = (next[cycleId] ?? []).filter((x) => x.id !== id);
       return next;
     });
   }
@@ -929,6 +1171,13 @@ function AppInner() {
     return last10Cycles.find((c) => c.id === historySelectedCycleId) ?? null;
   }, [historySelectedCycleId, last10Cycles]);
 
+  const navValue: "dashboard" | "history" | "settings" =
+    screen === "settings"
+      ? "settings"
+      : screen === "history" || screen === "history_detail"
+      ? "history"
+      : "dashboard";
+
   if (!loaded) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -1009,121 +1258,91 @@ function AppInner() {
             backgroundColor: COLORS.bg,
           }}
         >
-          {/* Top nav */}
+          {/* NEW: Segmented top nav (Impact #1) */}
           <View style={{ paddingTop: Math.max(0, insets.top), alignItems: "center" }}>
-            <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              <TextBtn
-                label="Dashboard"
-                onPress={() => {
-                  setHistorySelectedCycleId(null);
-                  setScreen("dashboard");
-                }}
-                kind={screen === "dashboard" ? "green" : "default"}
-              />
-              <TextBtn
-                label="History"
-                onPress={() => {
-                  setHistorySelectedCycleId(null);
-                  setScreen("history");
-                }}
-                kind={screen === "history" || screen === "history_detail" ? "green" : "default"}
-              />
-              <TextBtn
-                label="Settings"
-                onPress={() => {
-                  setHistorySelectedCycleId(null);
-                  setScreen("settings");
-                }}
-                kind={screen === "settings" ? "green" : "default"}
-              />
-            </View>
+            <SegmentedNav
+              value={navValue}
+              onChange={(v) => {
+                setHistorySelectedCycleId(null);
+                if (v === "dashboard") setScreen("dashboard");
+                if (v === "history") setScreen("history");
+                if (v === "settings") setScreen("settings");
+              }}
+            />
           </View>
 
           <ScrollView
             ref={dashboardScrollRef}
             style={{ marginTop: 12 }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{ paddingBottom: 260, paddingTop: 2 }}
+            contentContainerStyle={{ paddingBottom: 220, paddingTop: 2 }}
             showsVerticalScrollIndicator={false}
           >
             {screen === "dashboard" ? (
               <>
+                {/* NEW: Hero summary redesign (Impact #2) */}
                 <Card>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <TextBtn label="◀︎" onPress={() => setCycleOffset((o) => o - 1)} 
-                  />
-                    <View style={{ alignItems: "center", flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                    <ProgressRing pct={totals.pct} size={58} stroke={6} />
+
+                    <View style={{ flex: 1 }}>
                       <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
                         {cycleOffset === 0
                           ? "This paycheck"
                           : cycleOffset > 0
-                          ? `Next +${cycleOffset}`
-                          : `Prev ${cycleOffset}`}
+                          ? `Next paycheck (+${cycleOffset})`
+                          : `Previous paycheck (${cycleOffset})`}
                       </Text>
-                      <Text
-                        style={{
-                          color: COLORS.muted,
-                          marginTop: 4,
-                          fontWeight: "700",
-                          textAlign: "center",
-                        }}
-                      >
+
+                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
                         Payday {formatDate(viewCycle.payday)}
                       </Text>
-                    </View>
-                    <TextBtn label="▶︎" onPress={() => setCycleOffset((o) => o + 1)} />
-                  </View>
 
-                  {cycleOffset !== 0 ? (
-                    <View style={{ marginTop: 10, alignItems: "center" }}>
-                      <TextBtn label="Back to current" onPress={() => setCycleOffset(0)} kind="green" />
-                    </View>
-                  ) : null}
-                </Card>
-
-                <View style={{ marginTop: 12 }}>
-                  <Card>
-                    <View style={{ gap: 10 }}>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
-                        <Chip>{fmtMoney(settings.payAmount)}</Chip>
-                      </View>
-
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Personal spending (per pay)</Text>
-                        <Chip>{fmtMoney(personalSpendingTotal)}</Chip>
-                      </View>
-
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
-                        <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
-                      </View>
-
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Unexpected (this cycle)</Text>
-                        <Chip>{fmtMoney(unexpectedTotal)}</Chip>
-                      </View>
-
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
-                        <Chip>{fmtMoney(totals.planned)}</Chip>
-                      </View>
-
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
-                        <Chip>{fmtMoney(totals.done)}</Chip>
-                      </View>
-
-                      <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                        Progress:{" "}
-                        <Text style={{ color: COLORS.textStrong }}>
-                          {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
-                        </Text>
+                      <Text style={{ color: COLORS.faint, marginTop: 6, fontWeight: "700" }}>
+                        {totals.itemsDone}/{totals.itemsTotal} completed • Planned{" "}
+                        <Text style={{ color: COLORS.textStrong }}>{fmtMoney(totals.planned)}</Text>
                       </Text>
                     </View>
-                  </Card>
-                </View>
+                  </View>
 
+                  <Divider />
+
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                    <TextBtn label="◀︎ Prev" onPress={() => setCycleOffset((o) => o - 1)} />
+                    {cycleOffset !== 0 ? (
+                      <TextBtn label="This" onPress={() => setCycleOffset(0)} kind="green" />
+                    ) : (
+                      <TextBtn label="This" onPress={() => setCycleOffset(0)} disabled />
+                    )}
+                    <TextBtn label="Next ▶︎" onPress={() => setCycleOffset((o) => o + 1)} />
+                  </View>
+
+                  <View style={{ marginTop: 12, gap: 10 }}>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                      <Chip>Pay {fmtMoney(settings.payAmount)}</Chip>
+                      <Chip>Completed {fmtMoney(totals.done)}</Chip>
+                      <Chip>Unexpected {fmtMoney(unexpectedTotal)}</Chip>
+                      <Chip>Debt {fmtMoney(settings.debtRemaining)}</Chip>
+                      <Chip>Personal {fmtMoney(personalSpendingTotal)}</Chip>
+                    </View>
+
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                      <View>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Quick action</Text>
+                        <Text style={{ color: COLORS.faint, fontWeight: "700", marginTop: 3 }}>
+                          Add an unexpected expense (reduces debt paydown)
+                        </Text>
+                      </View>
+                      <TextBtn
+                        label="Add"
+                        kind="green"
+                        onPress={() => setUnexpectedSheetOpen(true)}
+                      />
+                    </View>
+                  </View>
+                </Card>
+
+                {/* Checklist sections */}
                 <View style={{ marginTop: 12, gap: 12 }}>
                   {grouped.map(([cat, catItems]) => {
                     const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
@@ -1136,39 +1355,27 @@ function AppInner() {
 
                         <Divider />
 
+                        {/* NEW: Modern list rows (Impact #3) */}
                         <View style={{ gap: 10 }}>
                           {catItems.map((it) => {
                             const state = activeChecked[it.id];
                             const isChecked = !!state?.checked;
+                            const subtitleParts: string[] = [];
+                            subtitleParts.push(it.notes ? it.notes : "");
+                            if (isChecked && state?.at) {
+                              subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
+                            }
+                            const subtitle = subtitleParts.filter(Boolean).join(" • ");
 
                             return (
-                              <Pressable
+                              <ListRow
                                 key={it.id}
+                                title={it.label}
+                                subtitle={subtitle || undefined}
+                                amount={fmtMoney(it.amount)}
+                                checked={isChecked}
                                 onPress={() => toggleItem(it.id)}
-                                style={{
-                                  padding: 12,
-                                  borderRadius: 16,
-                                  borderWidth: 1,
-                                  borderColor: COLORS.borderSoft,
-                                  backgroundColor: isChecked ? COLORS.greenSoft : "rgba(255,255,255,0.03)",
-                                }}
-                              >
-                                <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
-                                  <View style={{ flex: 1 }}>
-                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                      {isChecked ? "✅ " : "⬜ "} {it.label}
-                                    </Text>
-                                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                      {fmtMoney(it.amount)}
-                                      {it.notes ? ` • ${it.notes}` : ""}
-                                      {isChecked && state?.at
-                                        ? ` • checked ${new Date(state.at).toLocaleString()}`
-                                        : ""}
-                                    </Text>
-                                  </View>
-                                  <Chip>{fmtMoney(it.amount)}</Chip>
-                                </View>
-                              </Pressable>
+                              />
                             );
                           })}
                         </View>
@@ -1177,105 +1384,62 @@ function AppInner() {
                   })}
                 </View>
 
+                {/* Unexpected summary + list (still visible, editing via sheet) */}
                 <View style={{ marginTop: 12 }}>
                   <Card>
-                    <Pressable
-                      onPress={() => {
-                        const next = !unexpectedOpen;
-                        setUnexpectedOpen(next);
-                        if (next) scrollDashboardToEnd();
-                      }}
-                      style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
-                    >
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                       <View style={{ flex: 1 }}>
-                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected Expense</Text>
+                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected (this cycle)</Text>
                         <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                          Tap to {unexpectedOpen ? "close" : "open"} • This cycle:{" "}
-                          <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
+                          Total: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
                         </Text>
                       </View>
+                      <TextBtn label="Add" kind="green" onPress={() => setUnexpectedSheetOpen(true)} />
+                    </View>
 
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 18 }}>
-                        {unexpectedOpen ? "▾" : "▸"}
-                      </Text>
-                    </Pressable>
-
-                    {unexpectedOpen ? (
+                    {unexpected.length > 0 ? (
                       <>
                         <Divider />
-
-                        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                          Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
-                        </Text>
-
-                        <Field
-                          label="Label"
-                          value={uxLabel}
-                          onChangeText={setUxLabel}
-                          placeholder="Car repair"
-                          onFocusScrollToInput={scrollDashboardToInput}
-                        />
-
-                        <Field
-                          label="Amount"
-                          value={uxAmount}
-                          onChangeText={setUxAmount}
-                          keyboardType="numeric"
-                          placeholder="0"
-                          onFocusScrollToInput={scrollDashboardToInput}
-                        />
-
-                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                          <TextBtn
-                            label="Add unexpected expense"
-                            onPress={addUnexpected}
-                            kind="green"
-                            disabled={safeParseNumber(uxAmount) <= 0}
-                          />
-                        </View>
-
-                        {unexpected.length > 0 ? (
-                          <>
-                            <Divider />
-                            <View style={{ gap: 10 }}>
-                              {unexpected.map((x) => (
-                                <View
-                                  key={x.id}
-                                  style={{
-                                    padding: 12,
-                                    borderRadius: 16,
-                                    borderWidth: 1,
-                                    borderColor: COLORS.borderSoft,
-                                    backgroundColor: "rgba(255,255,255,0.03)",
-                                  }}
-                                >
-                                  <View
-                                    style={{
-                                      flexDirection: "row",
-                                      justifyContent: "space-between",
-                                      alignItems: "center",
-                                      gap: 10,
-                                    }}
-                                  >
-                                    <View style={{ flex: 1 }}>
-                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
-                                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                        {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
-                                      </Text>
-                                    </View>
-
-                                    <View style={{ alignItems: "flex-end", gap: 8 }}>
-                                      <Chip>{fmtMoney(x.amount)}</Chip>
-                                      <TextBtn label="Remove" onPress={() => removeUnexpected(x.id)} kind="red" />
-                                    </View>
-                                  </View>
+                        <View style={{ gap: 10 }}>
+                          {unexpected.map((x) => (
+                            <View
+                              key={x.id}
+                              style={{
+                                padding: 12,
+                                borderRadius: 16,
+                                borderWidth: 1,
+                                borderColor: COLORS.borderSoft,
+                                backgroundColor: "rgba(255,255,255,0.03)",
+                              }}
+                            >
+                              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
+                                  <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                    {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
+                                  </Text>
                                 </View>
-                              ))}
+                                <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                  <Chip>{fmtMoney(x.amount)}</Chip>
+                                  <TextBtn
+                                    label="Remove"
+                                    kind="red"
+                                    onPress={() => removeUnexpected(viewCycle.id, x.id)}
+                                  />
+                                </View>
+                              </View>
                             </View>
-                          </>
-                        ) : null}
+                          ))}
+                        </View>
                       </>
-                    ) : null}
+                    ) : (
+                      <>
+                        <Divider />
+                        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                          None yet. Tap “Add” to record one.
+                        </Text>
+                      </>
+                    )}
                   </Card>
                 </View>
 
@@ -1299,11 +1463,13 @@ function AppInner() {
                     const checked = getCycleChecked(c.id);
 
                     const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-                    const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+                    const done = its.reduce(
+                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+                      0
+                    );
                     const totalCount = its.length;
                     const doneCount = its.filter((i) => checked[i.id]?.checked).length;
                     const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
-
                     const metGoal = pct === 100;
 
                     return (
@@ -1391,7 +1557,10 @@ function AppInner() {
                     const checked = getCycleChecked(c.id);
 
                     const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-                    const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+                    const done = its.reduce(
+                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+                      0
+                    );
 
                     const totalCount = its.length;
                     const doneCount = its.filter((i) => checked[i.id]?.checked).length;
@@ -1475,7 +1644,9 @@ function AppInner() {
                             <Divider />
 
                             {uxArr.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None recorded for this cycle.</Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                                None recorded for this cycle.
+                              </Text>
                             ) : (
                               <View style={{ gap: 10 }}>
                                 {uxArr.map((x) => (
@@ -1580,7 +1751,9 @@ function AppInner() {
                             <Divider />
 
                             {missedItems.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None — you completed everything ✅</Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                                None — you completed everything ✅
+                              </Text>
                             ) : (
                               <View style={{ gap: 10 }}>
                                 {missedItems.map((i) => (
@@ -1635,6 +1808,96 @@ function AppInner() {
               />
             )}
           </ScrollView>
+
+          {/* NEW: Unexpected bottom sheet modal (Impact #4) */}
+          <BottomSheet
+            visible={unexpectedSheetOpen}
+            onClose={() => {
+              setUnexpectedSheetOpen(false);
+              Keyboard.dismiss();
+            }}
+            title="Add unexpected expense"
+            bottomInset={insets.bottom}
+          >
+            <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+              Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
+            </Text>
+
+            <Field
+              label="Label"
+              value={uxLabel}
+              onChangeText={setUxLabel}
+              placeholder="Car repair"
+              onFocusScrollToInput={scrollDashboardToInput}
+            />
+
+            <Field
+              label="Amount"
+              value={uxAmount}
+              onChangeText={setUxAmount}
+              keyboardType="numeric"
+              placeholder="0"
+              onFocusScrollToInput={scrollDashboardToInput}
+            />
+
+            <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+              <TextBtn
+                label="Add"
+                onPress={addUnexpected}
+                kind="green"
+                disabled={safeParseNumber(uxAmount) <= 0}
+              />
+              <TextBtn
+                label="Cancel"
+                onPress={() => {
+                  setUnexpectedSheetOpen(false);
+                  Keyboard.dismiss();
+                }}
+              />
+            </View>
+
+            <Divider />
+
+            <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>This cycle</Text>
+            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+              Total: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
+            </Text>
+
+            {unexpected.length === 0 ? (
+              <Text style={{ color: COLORS.muted, marginTop: 10, fontWeight: "700" }}>
+                No unexpected expenses recorded yet.
+              </Text>
+            ) : (
+              <View style={{ marginTop: 10, gap: 10 }}>
+                {unexpected.map((x) => (
+                  <View
+                    key={x.id}
+                    style={{
+                      padding: 12,
+                      borderRadius: 16,
+                      borderWidth: 1,
+                      borderColor: COLORS.borderSoft,
+                      backgroundColor: "rgba(255,255,255,0.03)",
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
+                        <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                          {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
+                        </Text>
+                      </View>
+                      <TextBtn
+                        label="Remove"
+                        kind="red"
+                        onPress={() => removeUnexpected(viewCycle.id, x.id)}
+                      />
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </BottomSheet>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -2210,7 +2473,7 @@ function SettingsScreen({
           {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
         </View>
 
-        {/* ✅ Reset ALL ONLY here at the bottom of Settings */}
+        {/* Reset ALL only here */}
         <View style={{ marginTop: 12 }}>
           <TextBtn label="Reset ALL (start over)" onPress={onResetAll} kind="red" />
         </View>
