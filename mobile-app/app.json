@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "name": "Paycheck Buddy",
+    "slug": "paycheck-buddy-mobile",
+    "version": "1.0.0",
+    "platforms": ["ios", "android", "web"],
+    "android": {
+      "package": "com.sunny.paycheckbuddy"
+    }
+  }
+}
