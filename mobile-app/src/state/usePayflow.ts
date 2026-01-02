@@ -1,5 +1,5 @@
 // src/state/usePayflow.ts
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
@@ -11,7 +11,7 @@ export type CreditCard = {
   id: string;
   name: string;
 
-  // ✅ NEW: true remaining debt on this card (this is what we reduce)
+  // ✅ true remaining debt on this card (this is what we reduce/increase)
   balance: number;
 
   totalDue: number; // statement balance due this month (informational)
@@ -59,6 +59,9 @@ export type UnexpectedExpense = {
   label: string;
   amount: number;
   atISO: string;
+
+  // ✅ NEW: optional card this was charged to
+  cardId?: string;
 };
 
 export type CardPayment = {
@@ -79,24 +82,13 @@ type Persisted = {
   activeCycleId?: string;
   unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
 
-  // ✅ NEW: manual payments ledger per cycle
+  // manual payments ledger per cycle
   cardPaymentsByCycle?: Record<string, CardPayment[]>;
 };
 
 // NOTE: Keep the same storage key so we can migrate old data safely
 const STORAGE_KEY = "payflow_mobile_v1";
 
-/**
- * ✅ IMPORTANT (setup-complete correctness)
- * If your app/_layout.tsx gate currently uses src/storage/setup.getSetupComplete(),
- * you MUST make that function read the SAME truth as this file.
- *
- * Easiest: in app/_layout.tsx, stop using getSetupComplete() and use these instead:
- *    await getSetupCompleteFromPayflow()
- *
- * And in SettingsScreen "Finish setup", also call:
- *    await setSetupCompleteForPayflow(true)
- */
 export async function getSetupCompleteFromPayflow(): Promise<boolean> {
   try {
     const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -152,9 +144,7 @@ export const safeParseNumber = (s: string) => {
 };
 
 export const fmtMoney = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
-    Math.max(0, n || 0)
-  );
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Math.max(0, n || 0));
 
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
@@ -324,7 +314,7 @@ export const getLastNCycles = (settings: Settings, now: Date, n: number) => {
 };
 
 /**
- * ✅ Checklist build
+ * Checklist build
  * - Minimum payments appear only if card has balance > 0 AND due date is in cycle
  * - Manual payments are separate UI (not auto-generated)
  * - Debt Paydown remains for "other debt" if you want it
@@ -453,7 +443,7 @@ function migrateSettings(raw: any): Settings {
     s.creditCards = oldBills.map((b: any) => ({
       id: String(b.id ?? `cc_${Date.now()}`),
       name: String(b.name ?? ""),
-      balance: Number(b.amount ?? 0) || 0, // treat old bill amount as balance
+      balance: Number(b.amount ?? 0) || 0,
       totalDue: Number(b.amount ?? 0) || 0,
       minDue: Number(b.amount ?? 0) || 0,
       dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
@@ -472,7 +462,7 @@ function migrateSettings(raw: any): Settings {
   s.creditCards = (s.creditCards || []).map((c: any) => {
     const totalDue = Number(c.totalDue ?? 0) || 0;
     const bal =
-      Number(c.balance ?? undefined) != null ? Number(c.balance) || 0 : totalDue; // default to totalDue if balance missing
+      Number(c.balance ?? undefined) != null ? Number(c.balance) || 0 : totalDue;
 
     return {
       id: String(c.id ?? `cc_${Date.now()}`),
@@ -560,7 +550,7 @@ export function usePayflow() {
     return { planned, done, itemsTotal, itemsDone, pct };
   }, [items, activeChecked]);
 
-  // ✅ shared loader (used by initial load AND reload())
+  // shared loader (used by initial load AND reload())
   const loadFromStorage = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -576,7 +566,6 @@ export function usePayflow() {
         setCardPaymentsByCycle(parsed?.cardPaymentsByCycle ?? {});
         setHasCompletedSetup(!!parsed?.hasCompletedSetup);
       } else {
-        // nothing saved yet
         setSettings(defaultSettings());
         setCheckedByCycle({});
         setAppliedItemReductions({});
@@ -589,7 +578,7 @@ export function usePayflow() {
     }
   }, []);
 
-  // ✅ public reload() so Settings can force-refresh the Dashboard immediately
+  // public reload() so Settings can force-refresh the Dashboard immediately
   const reload = useCallback(async () => {
     await loadFromStorage();
   }, [loadFromStorage]);
@@ -638,7 +627,7 @@ export function usePayflow() {
   };
 
   /**
-   * ✅ Apply reductions when checklist items are checked (once per item)
+   * Apply reductions when checklist items are checked (once per item)
    * - cc_min_{cardId} reduces that card's balance by its minDue
    * - debt_paydown reduces settings.debtRemaining by remainder amount
    */
@@ -646,7 +635,6 @@ export function usePayflow() {
     if (!loaded) return;
     if (!hasCompletedSetup) return;
 
-    // Apply any newly-checked items
     for (const it of items) {
       const checked = !!activeChecked[it.id]?.checked;
       if (!checked) continue;
@@ -655,7 +643,6 @@ export function usePayflow() {
       const already = !!appliedItemReductions[key];
       if (already) continue;
 
-      // Credit card minimum: subtract min from card balance
       if (it.id.startsWith("cc_min_")) {
         const cardId = it.id.replace("cc_min_", "");
         setSettings((s) => ({
@@ -668,7 +655,6 @@ export function usePayflow() {
         }));
       }
 
-      // Debt paydown: subtract from debtRemaining
       if (it.id === "debt_paydown") {
         const payAmount = it.amount || 0;
         setSettings((s) => ({
@@ -681,7 +667,12 @@ export function usePayflow() {
     }
   }, [loaded, hasCompletedSetup, items, activeChecked, appliedItemReductions, viewCycle.id]);
 
-  const addUnexpected = (label: string, amountText: string) => {
+  /**
+   * ✅ Unexpected expense
+   * - If cardId provided, increases that card's balance immediately
+   * - Stored per cycle for history
+   */
+  const addUnexpected = (label: string, amountText: string, cardId?: string) => {
     const amt = safeParseNumber(amountText);
     if (amt <= 0) return false;
 
@@ -690,7 +681,18 @@ export function usePayflow() {
       label: (label || "Unexpected expense").trim(),
       amount: amt,
       atISO: new Date().toISOString(),
+      cardId: cardId || undefined,
     };
+
+    // ✅ if charged to a credit card, increase the card balance
+    if (cardId) {
+      setSettings((s) => ({
+        ...s,
+        creditCards: (s.creditCards || []).map((c) =>
+          c.id === cardId ? { ...c, balance: (c.balance || 0) + amt } : c
+        ),
+      }));
+    }
 
     setUnexpectedByCycle((prev) => {
       const next = { ...prev };
@@ -703,16 +705,33 @@ export function usePayflow() {
     return true;
   };
 
+  /**
+   * ✅ Remove unexpected expense
+   * - If it was charged to a card, reverse the balance increase
+   */
   const removeUnexpected = (cycleId: string, id: string) => {
     setUnexpectedByCycle((prev) => {
-      const next = { ...prev };
-      next[cycleId] = (next[cycleId] ?? []).filter((x) => x.id !== id);
-      return next;
+      const list = prev[cycleId] ?? [];
+      const item = list.find((x) => x.id === id);
+      if (!item) return prev;
+
+      if (item.cardId) {
+        setSettings((s) => ({
+          ...s,
+          creditCards: (s.creditCards || []).map((c) =>
+            c.id === item.cardId
+              ? { ...c, balance: Math.max(0, (c.balance || 0) - (item.amount || 0)) }
+              : c
+          ),
+        }));
+      }
+
+      return { ...prev, [cycleId]: list.filter((x) => x.id !== id) };
     });
   };
 
   /**
-   * ✅ Manual card payment
+   * Manual card payment
    * - Immediately reduces the selected card's balance
    * - Stored per cycle so totals + history reflect it
    */
@@ -753,7 +772,7 @@ export function usePayflow() {
   };
 
   /**
-   * ✅ Delete manual payment
+   * Delete manual payment
    * - Restores the amount back to the card balance
    */
   const removeCardPayment = (cycleId: string, paymentId: string) => {
@@ -787,10 +806,10 @@ export function usePayflow() {
     } catch {}
   };
 
-  const last10Cycles = useMemo(
-    () => (hasCompletedSetup ? getLastNCycles(settings, new Date(), 10) : []),
-    [settings, hasCompletedSetup]
-  );
+  const last10Cycles = useMemo(() => (hasCompletedSetup ? getLastNCycles(settings, new Date(), 10) : []), [
+    settings,
+    hasCompletedSetup,
+  ]);
 
   const getCycleUnexpectedTotal = (cycleId: string) => {
     const arr = unexpectedByCycle[cycleId] ?? [];
@@ -811,7 +830,7 @@ export function usePayflow() {
     settings,
     setSettings,
 
-    // ✅ NEW: allow SettingsScreen (and others) to refresh immediately
+    // allow SettingsScreen to refresh immediately
     reload,
 
     cycleOffset,
