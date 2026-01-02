@@ -17,12 +17,12 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
-import { usePayflow } from "@/src/state/PayFlowProvider";
 import {
+  usePayflow,
   fmtMoney,
   formatDate,
   displayCategory,
-} from "@/src/state/payflowHelpers";
+} from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
@@ -218,7 +218,6 @@ export default function DashboardScreen() {
   }
 
   // If setup gate is still required, route user to Settings tab to finish setup.
-  // (We keep this minimal and non-looping.)
   if (!hasCompletedSetup) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -325,10 +324,15 @@ export default function DashboardScreen() {
             <View style={{ marginTop: 12, gap: 12 }}>
               {grouped.map(([cat, catItems]) => {
                 const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
+
+                // UI rename: show “Credit Cards” instead of “Bills”
+                const label =
+                  cat === "Bills" ? "Credit Cards" : displayCategory(cat as any);
+
                 return (
-                  <Card key={cat}>
+                  <Card key={String(cat)}>
                     <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{displayCategory(cat)}</Text>
+                      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{label}</Text>
                       <Chip>{fmtMoney(plannedForCat)} planned</Chip>
                     </View>
 

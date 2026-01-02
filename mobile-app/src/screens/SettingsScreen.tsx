@@ -14,19 +14,21 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { usePayflow } from "@/src/state/PayFlowProvider";
 import {
+  usePayflow,
   safeParseNumber,
-  clamp,
-  formatDate,
   type Settings,
-  type Bill,
+  type CreditCard,
   type Allocation,
   type MonthlyItem,
   type PersonalSpendingItem,
-} from "@/src/state/payflowHelpers";
+} from "@/src/state/usePayflow";
 
 import { Card, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
 
 function hasValidAnchorDate(iso: string) {
   if (!iso) return false;
@@ -41,6 +43,15 @@ function toAnchorISO(d: Date) {
 function anchorDateFromISO(iso: string) {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function formatDate(d: Date) {
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
@@ -66,22 +77,25 @@ export default function SettingsScreen() {
   const [anchorError, setAnchorError] = useState(false);
 
   // Editable due-day text buffers so user can fully delete/retype
-  const [billDueText, setBillDueText] = useState<Record<string, string>>({});
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
+  const [cardDueText, setCardDueText] = useState<Record<string, string>>({});
+
+  // Calendar picker for card due date (we store day-of-month only)
+  const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
 
   useEffect(() => {
     setLocal(settings);
 
-    const nextBillMap: Record<string, string> = {};
-    for (const b of settings.bills || []) nextBillMap[b.id] = String(b.dueDay ?? "");
-
     const nextMonthlyMap: Record<string, string> = {};
-    for (const m of settings.monthlyItems || [])
-      nextMonthlyMap[m.id] = String(m.dueDay ?? "");
-
-    setBillDueText(nextBillMap);
+    for (const m of settings.monthlyItems || []) nextMonthlyMap[m.id] = String(m.dueDay ?? "");
     setMonthlyDueText(nextMonthlyMap);
+
+    const nextCardMap: Record<string, string> = {};
+    for (const c of settings.creditCards || []) nextCardMap[c.id] = String(c.dueDay ?? "");
+    setCardDueText(nextCardMap);
   }, [settings]);
+
+  const keyboardOffset = Math.max(0, insets.top + 24);
 
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
     requestAnimationFrame(() => {
@@ -109,34 +123,9 @@ export default function SettingsScreen() {
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
   }
 
-  function updateBill(billId: string, patch: Partial<Bill>) {
-    setLocal((s) => ({
-      ...s,
-      bills: (s.bills || []).map((b) => (b.id === billId ? { ...b, ...patch } : b)),
-    }));
-  }
-
-  function addBill() {
-    const id = `bill_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      bills: [...(s.bills || []), { id, name: "", amount: 0, dueDay: 1 }],
-    }));
-    setBillDueText((m) => ({ ...m, [id]: "" })); // blank so user can type freely
-  }
-
-  function removeBill(id: string) {
-    setLocal((s) => ({
-      ...s,
-      bills: (s.bills || []).filter((b) => b.id !== id),
-    }));
-    setBillDueText((m) => {
-      const next = { ...m };
-      delete next[id];
-      return next;
-    });
-  }
-
+  // -----------------------------
+  // Paycheck Distributions
+  // -----------------------------
   function addDistribution() {
     const id = `alloc_${Date.now()}`;
     setLocal((s) => ({
@@ -159,6 +148,9 @@ export default function SettingsScreen() {
     }));
   }
 
+  // -----------------------------
+  // Personal Spending
+  // -----------------------------
   function addPersonalSpending() {
     const id = `ps_${Date.now()}`;
     setLocal((s) => ({
@@ -170,9 +162,7 @@ export default function SettingsScreen() {
   function updatePersonalSpending(id: string, patch: Partial<PersonalSpendingItem>) {
     setLocal((s) => ({
       ...s,
-      personalSpending: (s.personalSpending || []).map((p) =>
-        p.id === id ? { ...p, ...patch } : p
-      ),
+      personalSpending: (s.personalSpending || []).map((p) => (p.id === id ? { ...p, ...patch } : p)),
     }));
   }
 
@@ -183,13 +173,16 @@ export default function SettingsScreen() {
     }));
   }
 
+  // -----------------------------
+  // Monthly Items
+  // -----------------------------
   function addMonthlyItem() {
     const id = `monthly_${Date.now()}`;
     setLocal((s) => ({
       ...s,
       monthlyItems: [...(s.monthlyItems || []), { id, label: "", amount: 0, dueDay: 1 }],
     }));
-    setMonthlyDueText((m) => ({ ...m, [id]: "" })); // blank
+    setMonthlyDueText((m) => ({ ...m, [id]: "" }));
   }
 
   function updateMonthlyItem(id: string, patch: Partial<MonthlyItem>) {
@@ -211,8 +204,41 @@ export default function SettingsScreen() {
     });
   }
 
+  // -----------------------------
+  // Credit Cards
+  // -----------------------------
+  function updateCard(cardId: string, patch: Partial<CreditCard>) {
+    setLocal((s) => ({
+      ...s,
+      creditCards: (s.creditCards || []).map((c) => (c.id === cardId ? { ...c, ...patch } : c)),
+    }));
+  }
+
+  function addCard() {
+    const id = `cc_${Date.now()}`;
+    setLocal((s) => ({
+      ...s,
+      creditCards: [...(s.creditCards || []), { id, name: "", totalDue: 0, minDue: 0, dueDay: 1 }],
+    }));
+    setCardDueText((m) => ({ ...m, [id]: "" }));
+  }
+
+  function removeCard(id: string) {
+    setLocal((s) => ({
+      ...s,
+      creditCards: (s.creditCards || []).filter((c) => c.id !== id),
+    }));
+    setCardDueText((m) => {
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+  }
+
+  // -----------------------------
+  // Save
+  // -----------------------------
   function save() {
-    // Anchor required for weekly/biweekly
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
@@ -220,30 +246,41 @@ export default function SettingsScreen() {
     }
 
     // Commit due-day text buffers into numeric dueDay values
-    const bills: Bill[] = (local.bills || []).map((b) => {
-      const t = billDueText[b.id] ?? String(b.dueDay ?? "");
-      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
-      return { ...b, dueDay: n };
-    });
-
     const monthlyItems: MonthlyItem[] = (local.monthlyItems || []).map((m) => {
       const t = monthlyDueText[m.id] ?? String(m.dueDay ?? "");
       const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
       return { ...m, dueDay: n };
     });
 
-    const nextLocal: Settings = { ...local, bills, monthlyItems };
+    const creditCards: CreditCard[] = (local.creditCards || []).map((c) => {
+      const t = cardDueText[c.id] ?? String(c.dueDay ?? "");
+      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
+      return { ...c, dueDay: n };
+    });
+
+    const nextLocal: Settings = { ...local, monthlyItems, creditCards };
 
     // Validate core fields
     if (nextLocal.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
-    if (nextLocal.debtRemaining < 0)
-      return Alert.alert("Invalid", "Debt remaining must be >= 0");
+    if (nextLocal.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
     if (nextLocal.twiceMonthlyDay1 < 1 || nextLocal.twiceMonthlyDay1 > 28)
       return Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
     if (nextLocal.twiceMonthlyDay2 < 1 || nextLocal.twiceMonthlyDay2 > 28)
       return Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
     if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
+
+    // Credit card validation (light, but prevents obvious junk)
+    for (const c of nextLocal.creditCards || []) {
+      if ((c.totalDue || 0) < 0) return Alert.alert("Invalid", "Total Amount Due must be >= 0");
+      if ((c.minDue || 0) < 0) return Alert.alert("Invalid", "Minimum Due must be >= 0");
+      if ((c.minDue || 0) > (c.totalDue || 0) && (c.totalDue || 0) > 0) {
+        return Alert.alert("Invalid", "Minimum Due cannot be greater than Total Amount Due.");
+      }
+      if ((c.dueDay || 1) < 1 || (c.dueDay || 1) > 31) {
+        return Alert.alert("Invalid", "Credit card due day must be 1–31.");
+      }
+    }
 
     setSettings(nextLocal);
 
@@ -283,6 +320,7 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
+
       <View
         style={{
           flex: 1,
@@ -346,12 +384,7 @@ export default function SettingsScreen() {
                       backgroundColor: "rgba(255,255,255,0.05)",
                     }}
                   >
-                    <Text
-                      style={{
-                        color: anchorSelected ? COLORS.textStrong : COLORS.faint,
-                        fontWeight: "800",
-                      }}
-                    >
+                    <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
                       {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                     </Text>
                     <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
@@ -443,7 +476,7 @@ export default function SettingsScreen() {
             <Card>
               <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
               <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Items that repeat every pay cycle (e.g., Savings, Investing, Fuel).
+                Items that repeat every pay cycle (e.g., Savings, Investing).
               </Text>
 
               <Divider />
@@ -460,9 +493,7 @@ export default function SettingsScreen() {
                       backgroundColor: "rgba(255,255,255,0.03)",
                     }}
                   >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                      Paycheck Distribution
-                    </Text>
+                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
 
                     <Field
                       label="Name"
@@ -470,6 +501,7 @@ export default function SettingsScreen() {
                       onChangeText={(s) => updateDistribution(a.id, { label: s })}
                       placeholder="Savings"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
                     <Field
                       label="Amount"
@@ -478,14 +510,11 @@ export default function SettingsScreen() {
                       keyboardType="numeric"
                       placeholder="0"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
 
                     <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn
-                        label="Remove distribution"
-                        onPress={() => removeDistribution(a.id)}
-                        kind="red"
-                      />
+                      <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
                     </View>
                   </View>
                 ))}
@@ -515,9 +544,7 @@ export default function SettingsScreen() {
                       backgroundColor: "rgba(255,255,255,0.03)",
                     }}
                   >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                      Personal Spending Item
-                    </Text>
+                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
 
                     <Field
                       label="Name"
@@ -525,24 +552,20 @@ export default function SettingsScreen() {
                       onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
                       placeholder="Dining out"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
                     <Field
                       label="Amount"
                       value={String(p.amount)}
-                      onChangeText={(s) =>
-                        updatePersonalSpending(p.id, { amount: safeParseNumber(s) })
-                      }
+                      onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
                       keyboardType="numeric"
                       placeholder="0"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
 
                     <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn
-                        label="Remove personal item"
-                        onPress={() => removePersonalSpending(p.id)}
-                        kind="red"
-                      />
+                      <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
                     </View>
                   </View>
                 ))}
@@ -555,7 +578,7 @@ export default function SettingsScreen() {
             <Card>
               <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
               <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Each monthly expense appears in the paycheck cycle that contains its due day (like bills).
+                Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
               </Text>
 
               <Divider />
@@ -572,16 +595,15 @@ export default function SettingsScreen() {
                       backgroundColor: "rgba(255,255,255,0.03)",
                     }}
                   >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                      Monthly Expense
-                    </Text>
+                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
 
                     <Field
                       label="Name"
                       value={m.label}
                       onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                      placeholder="Rent"
+                      placeholder="Electricity"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
 
                     <Field
@@ -591,25 +613,21 @@ export default function SettingsScreen() {
                       keyboardType="numeric"
                       placeholder="0"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
 
                     <Field
                       label="Due day (1–31)"
                       value={monthlyDueText[m.id] ?? ""}
-                      onChangeText={(s) =>
-                        setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))
-                      }
+                      onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
                       keyboardType="numeric"
                       placeholder="1"
                       onFocusScrollToInput={scrollToInput}
+                      clearOnFocus
                     />
 
                     <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn
-                        label="Remove monthly expense"
-                        onPress={() => removeMonthlyItem(m.id)}
-                        kind="red"
-                      />
+                      <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
                     </View>
                   </View>
                 ))}
@@ -618,81 +636,131 @@ export default function SettingsScreen() {
               </View>
             </Card>
 
-            {/* Bills */}
+            {/* Credit Cards */}
             <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
+              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
               <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Bills show up automatically in the paycheck cycle that contains their due date.
+                Add each card’s due date + minimum payment. The app assigns it to the correct paycheck (1–15 vs 16–31).
               </Text>
 
               <Divider />
 
               <View style={{ gap: 12 }}>
-                {(local.bills || []).map((b) => (
-                  <View
-                    key={b.id}
-                    style={{
-                      borderWidth: 1,
-                      borderColor: COLORS.borderSoft,
-                      borderRadius: 16,
-                      padding: 12,
-                      backgroundColor: "rgba(255,255,255,0.03)",
-                    }}
-                  >
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Bill</Text>
+                {(local.creditCards || []).map((c) => {
+                  const dueText = cardDueText[c.id] ?? "";
+                  const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
 
-                    <Field
-                      label="Name"
-                      value={b.name}
-                      onChangeText={(s) => updateBill(b.id, { name: s })}
-                      placeholder="Verizon"
-                      onFocusScrollToInput={scrollToInput}
-                    />
+                  return (
+                    <View
+                      key={c.id}
+                      style={{
+                        borderWidth: 1,
+                        borderColor: COLORS.borderSoft,
+                        borderRadius: 16,
+                        padding: 12,
+                        backgroundColor: "rgba(255,255,255,0.03)",
+                      }}
+                    >
+                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
 
-                    <Field
-                      label="Amount"
-                      value={String(b.amount)}
-                      onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
-                      keyboardType="numeric"
-                      placeholder="0"
-                      onFocusScrollToInput={scrollToInput}
-                    />
+                      <Field
+                        label="Name"
+                        value={c.name}
+                        onChangeText={(s) => updateCard(c.id, { name: s })}
+                        placeholder="Chase Freedom"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
 
-                    <Field
-                      label="Due day (1–31)"
-                      value={billDueText[b.id] ?? ""}
-                      onChangeText={(s) =>
-                        setBillDueText((map) => ({ ...map, [b.id]: keepDigitsOnly(s) }))
-                      }
-                      keyboardType="numeric"
-                      placeholder="1"
-                      onFocusScrollToInput={scrollToInput}
-                    />
+                      <Field
+                        label="Total Amount Due"
+                        value={String(c.totalDue)}
+                        onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
+                        keyboardType="numeric"
+                        placeholder="0"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
 
-                    <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                      <TextBtn label="Remove bill" onPress={() => removeBill(b.id)} kind="red" />
+                      <Field
+                        label="Minimum Due"
+                        value={String(c.minDue)}
+                        onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
+                        keyboardType="numeric"
+                        placeholder="0"
+                        onFocusScrollToInput={scrollToInput}
+                        clearOnFocus
+                      />
+
+                      <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
+
+                      <Pressable
+                        onPress={() => setOpenCardPickerId(c.id)}
+                        style={{
+                          marginTop: 6,
+                          borderWidth: 1,
+                          borderColor: COLORS.border,
+                          borderRadius: 14,
+                          paddingVertical: 12,
+                          paddingHorizontal: 12,
+                          backgroundColor: "rgba(255,255,255,0.05)",
+                        }}
+                      >
+                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
+                        <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                          Tap to pick a date (we only store the day number)
+                        </Text>
+                      </Pressable>
+
+                      {openCardPickerId === c.id ? (
+                        <DateTimePicker
+                          value={new Date()}
+                          mode="date"
+                          display={Platform.OS === "ios" ? "spinner" : "default"}
+                          onChange={(event, selectedDate) => {
+                            if (Platform.OS !== "ios") setOpenCardPickerId(null);
+                            if (!selectedDate) return;
+                            const day = selectedDate.getDate();
+                            setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
+                            updateCard(c.id, { dueDay: day });
+                          }}
+                        />
+                      ) : null}
+
+                      {Platform.OS === "ios" && openCardPickerId === c.id ? (
+                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                          <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
+                        </View>
+                      ) : null}
+
+                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                        <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
+                      </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
 
-                <TextBtn label="Add bill" onPress={addBill} />
+                <TextBtn label="Add credit card" onPress={addCard} />
               </View>
             </Card>
 
             {/* Actions */}
             <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-              <TextBtn
-                label={mode === "setup" ? "Finish setup" : "Save settings"}
-                onPress={save}
-                kind="green"
-              />
+              <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
             </View>
 
             <View style={{ marginTop: 12 }}>
               <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
             </View>
 
-            <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
+            <Text
+              style={{
+                color: COLORS.faint,
+                marginTop: 10,
+                textAlign: "center",
+                fontWeight: "700",
+              }}
+            >
               Offline • Saved on-device
             </Text>
           </View>

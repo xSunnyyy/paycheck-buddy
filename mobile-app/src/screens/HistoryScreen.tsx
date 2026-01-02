@@ -1,46 +1,45 @@
 // src/screens/HistoryScreen.tsx
 import React, { useMemo, useState } from "react";
-import { ScrollView, Text, View, Pressable } from "react-native";
+import { ScrollView, Text, View, Pressable, StatusBar } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { usePayflow } from "@/src/state/PayFlowProvider";
 import {
+  usePayflow,
   buildChecklistForCycle,
   fmtMoney,
   formatDate,
   displayCategory,
-  getLastNCycles,
-  Cycle,
-} from "@/src/state/payflowHelpers";
+  type Cycle,
+} from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, TextBtn, TYPE } from "@/src/ui/common";
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
-  const { loaded, hasCompletedSetup, settings, checkedByCycle, unexpectedByCycle } = usePayflow();
+
+  const {
+    loaded,
+    hasCompletedSetup,
+    settings,
+    last10Cycles,
+    getCycleUnexpectedTotal,
+    getCycleChecked,
+  } = usePayflow();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const last10 = useMemo(() => {
-    if (!hasCompletedSetup) return [];
-    return getLastNCycles(settings, new Date(), 10);
-  }, [hasCompletedSetup, settings]);
-
   const selectedCycle = useMemo(() => {
     if (!selectedId) return null;
-    return last10.find((c) => c.id === selectedId) ?? null;
-  }, [selectedId, last10]);
-
-  const getCycleUnexpectedTotal = (cycleId: string) => {
-    const arr = unexpectedByCycle[cycleId] ?? [];
-    return arr.reduce((sum, x) => sum + (x.amount || 0), 0);
-  };
-
-  const getCycleChecked = (cycleId: string) => checkedByCycle[cycleId] ?? {};
+    return last10Cycles.find((c) => c.id === selectedId) ?? null;
+  }, [selectedId, last10Cycles]);
 
   if (!loaded) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: COLORS.bg }}
+        edges={["top", "left", "right"]}
+      >
+        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
           <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Loading…</Text>
         </View>
@@ -50,7 +49,11 @@ export default function HistoryScreen() {
 
   if (!hasCompletedSetup) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: COLORS.bg }}
+        edges={["top", "left", "right"]}
+      >
+        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
         <View style={{ flex: 1, padding: 16, paddingTop: 12 + insets.top }}>
           <Card>
             <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>History</Text>
@@ -66,30 +69,44 @@ export default function HistoryScreen() {
   // -------------------- Details view --------------------
   if (selectedCycle) {
     const c = selectedCycle;
-    const uxArr = unexpectedByCycle[c.id] ?? [];
-    const uxTot = getCycleUnexpectedTotal(c.id);
 
-    const its = buildChecklistForCycle(settings, c, uxTot);
+    const uxTot = getCycleUnexpectedTotal(c.id);
     const checked = getCycleChecked(c.id);
 
-    const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-    const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+    const items = buildChecklistForCycle(settings, c, uxTot);
 
-    const totalCount = its.length;
-    const doneCount = its.filter((i) => checked[i.id]?.checked).length;
+    const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
+    const done = items.reduce(
+      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+      0
+    );
+
+    const totalCount = items.length;
+    const doneCount = items.filter((i) => checked[i.id]?.checked).length;
     const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
     const metGoal = pct === 100;
 
-    const bills = its.filter((i) => i.category === "Bills");
-    const billsPaid = bills.filter((b) => !!checked[b.id]?.checked);
-    const billsMissed = bills.filter((b) => !checked[b.id]?.checked);
-    const missedItems = its.filter((i) => !checked[i.id]?.checked);
+    // “Credit Cards” checklist items are category "Bills" in your current category union
+    // (we’re just labeling them differently in the UI)
+    const cards = items.filter((i) => i.category === "Bills");
+    const cardsPaid = cards.filter((b) => !!checked[b.id]?.checked);
+    const cardsMissed = cards.filter((b) => !checked[b.id]?.checked);
+
+    const missedItems = items.filter((i) => !checked[i.id]?.checked);
 
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <SafeAreaView
+        style={{ flex: 1, backgroundColor: COLORS.bg }}
+        edges={["top", "left", "right"]}
+      >
+        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
         <ScrollView
           style={{ flex: 1, backgroundColor: COLORS.bg }}
-          contentContainerStyle={{ padding: 16, paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }}
+          contentContainerStyle={{
+            padding: 16,
+            paddingTop: 12 + insets.top,
+            paddingBottom: 24 + insets.bottom,
+          }}
           showsVerticalScrollIndicator={false}
         >
           <Card>
@@ -136,57 +153,24 @@ export default function HistoryScreen() {
 
           <View style={{ marginTop: 12 }}>
             <Card>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected expenses</Text>
-                <Chip>{fmtMoney(uxTot)}</Chip>
-              </View>
-
-              <Divider />
-
-              {uxArr.length === 0 ? (
-                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None recorded for this cycle.</Text>
-              ) : (
-                <View style={{ gap: 10 }}>
-                  {uxArr.map((x) => (
-                    <View
-                      key={x.id}
-                      style={{
-                        padding: 12,
-                        borderRadius: 16,
-                        borderWidth: 1,
-                        borderColor: COLORS.borderSoft,
-                        backgroundColor: "rgba(255,255,255,0.03)",
-                      }}
-                    >
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
-                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                        {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              )}
-            </Card>
-          </View>
-
-          <View style={{ marginTop: 12 }}>
-            <Card>
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills</Text>
+              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
               <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                Paid: {billsPaid.length} • Missed: {billsMissed.length}
+                Paid: {cardsPaid.length} • Missed: {cardsMissed.length}
               </Text>
 
               <Divider />
 
-              {bills.length === 0 ? (
-                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>No bills fell due in this cycle.</Text>
+              {cards.length === 0 ? (
+                <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                  No credit card payments were due in this cycle.
+                </Text>
               ) : (
                 <>
-                  {billsPaid.length > 0 ? (
+                  {cardsPaid.length > 0 ? (
                     <>
                       <Text style={{ color: "rgba(34,197,94,0.95)", fontWeight: "900" }}>Paid</Text>
                       <View style={{ gap: 10, marginTop: 8 }}>
-                        {billsPaid.map((b) => (
+                        {cardsPaid.map((b) => (
                           <View
                             key={b.id}
                             style={{
@@ -199,7 +183,8 @@ export default function HistoryScreen() {
                           >
                             <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>✅ {b.label}</Text>
                             <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                              {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
+                              {fmtMoney(b.amount)}
+                              {b.notes ? ` • ${b.notes}` : ""}
                             </Text>
                           </View>
                         ))}
@@ -207,12 +192,12 @@ export default function HistoryScreen() {
                     </>
                   ) : null}
 
-                  {billsMissed.length > 0 ? (
+                  {cardsMissed.length > 0 ? (
                     <>
                       <Divider />
                       <Text style={{ color: "rgba(251,191,36,0.95)", fontWeight: "900" }}>Missed</Text>
                       <View style={{ gap: 10, marginTop: 8 }}>
-                        {billsMissed.map((b) => (
+                        {cardsMissed.map((b) => (
                           <View
                             key={b.id}
                             style={{
@@ -225,7 +210,8 @@ export default function HistoryScreen() {
                           >
                             <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>⬜ {b.label}</Text>
                             <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                              {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
+                              {fmtMoney(b.amount)}
+                              {b.notes ? ` • ${b.notes}` : ""}
                             </Text>
                           </View>
                         ))}
@@ -280,9 +266,14 @@ export default function HistoryScreen() {
   // -------------------- List view --------------------
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
       <ScrollView
         style={{ flex: 1, backgroundColor: COLORS.bg }}
-        contentContainerStyle={{ padding: 16, paddingTop: 12 + insets.top, paddingBottom: 24 + insets.bottom }}
+        contentContainerStyle={{
+          padding: 16,
+          paddingTop: 12 + insets.top,
+          paddingBottom: 24 + insets.bottom,
+        }}
         showsVerticalScrollIndicator={false}
       >
         <Card>
@@ -293,16 +284,19 @@ export default function HistoryScreen() {
         </Card>
 
         <View style={{ marginTop: 12, gap: 12 }}>
-          {last10.map((c: Cycle, idx: number) => {
+          {last10Cycles.map((c: Cycle, idx: number) => {
             const uxTot = getCycleUnexpectedTotal(c.id);
-            const its = buildChecklistForCycle(settings, c, uxTot);
+            const items = buildChecklistForCycle(settings, c, uxTot);
             const checked = getCycleChecked(c.id);
 
-            const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-            const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+            const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
+            const done = items.reduce(
+              (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
+              0
+            );
 
-            const totalCount = its.length;
-            const doneCount = its.filter((i) => checked[i.id]?.checked).length;
+            const totalCount = items.length;
+            const doneCount = items.filter((i) => checked[i.id]?.checked).length;
             const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
             const metGoal = pct === 100;
 
