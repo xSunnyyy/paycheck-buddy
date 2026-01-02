@@ -1,827 +1,1137 @@
 // mobile-app/App.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  SafeAreaView,
   View,
   Text,
-  TextInput,
   Pressable,
+  TextInput,
   ScrollView,
-  Platform,
   Alert,
-  StyleSheet,
+  Platform,
+  StatusBar,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
-import { Picker } from "@react-native-picker/picker";
+import {
+  SafeAreaProvider,
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
-type PayFrequency = "weekly" | "biweekly" | "semimonthly" | "monthly";
-type DateFormat = "MM/DD/YYYY" | "DD/MM/YYYY" | "YYYY-MM-DD";
+/**
+ * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
+ * - Stores everything on device (AsyncStorage)
+ * - User inputs: income, bills (dueDay), ONE total debt, monthly expense (single item), pay schedule
+ * - Checklist remains: categories, checkboxes, per-cycle
+ * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
+ *
+ * ✅ FIXES APPLIED:
+ * 1) Proper Safe Area handling for Android (Fold devices) using react-native-safe-area-context
+ * 2) Header padding respects top inset so it won't be cut off by the status bar
+ * 3) StatusBar set to translucent with transparent background
+ * 4) ScrollView content includes extra top padding so content doesn't clip
+ */
+
+/** -------------------- Types -------------------- */
+
+type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
+
+type Category = "Bills" | "Monthly" | "Savings" | "Investing" | "Fuel" | "Debt";
 
 type Bill = {
   id: string;
   name: string;
-  amount: number; // default 0
-  dueDay: number; // 1-31
-  type: "bill" | "monthly"; // monthly shows as one combined item later
+  amount: number;
+  dueDay: number; // 1–31
 };
 
-type AppData = {
-  setupComplete: boolean;
+type Settings = {
+  payFrequency: PayFrequency;
 
-  // Pay / income
-  paycheckAmount: number; // default 0
-  payFrequency: PayFrequency; // default biweekly
-  paydayAnchorISO: string; // date picker
-  dateFormat: DateFormat; // dropdown
-  paychecksPerMonthEstimate: number; // optional helper for UI (default 2)
+  // Pay amount per pay event:
+  // - weekly: payAmount = weekly paycheck
+  // - biweekly: payAmount = bi-weekly paycheck
+  // - twice-monthly: payAmount = each paycheck amount
+  // - monthly: payAmount = monthly income amount (single pay event)
+  payAmount: number;
 
-  // Debt
-  totalDebt: number; // default 0
-  weeklyDebtPaydown: number; // default 0 (auto-decrease per week if you want)
+  // Anchor date used for weekly/biweekly schedule (first payday)
+  // For twice-monthly/monthly we use day-of-month settings instead
+  anchorISO: string; // ISO date string
 
-  // Bills / monthly
-  bills: Bill[]; // amounts default 0
+  // Twice-monthly paydays (e.g., 1st and 15th)
+  twiceMonthlyDay1: number; // 1–28
+  twiceMonthlyDay2: number; // 1–28
+
+  // Monthly payday (e.g., 1st)
+  monthlyPayDay: number; // 1–28
+
+  // Bills
+  bills: Bill[];
+
+  // Monthly expense (single item)
+  monthlyLabel: string; // e.g. "Rent" / "Groceries" / "Other"
+  monthlyAmount: number;
+
+  // Per-pay allocations (repeat each pay event)
+  savingsPerPay: number;
+  investingPerPay: number;
+  fuelPerPay: number;
+
+  // Total debt (one number)
+  debtRemaining: number;
 };
 
-const STORAGE_KEY = "paycheck_buddy_v1";
+type CheckedState = Record<string, { checked: boolean; at?: string }>;
 
-const money = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(Number.isFinite(n) ? n : 0);
+type Cycle = {
+  id: string; // stable id for this cycle (used to avoid double-subtract debt)
+  label: string; // display label
+  start: Date;
+  end: Date;
+  payday: Date; // "cycle payday" for display
+};
 
-function clampInt(n: number, min: number, max: number) {
-  const x = Math.floor(Number.isFinite(n) ? n : 0);
-  return Math.max(min, Math.min(max, x));
-}
+/** -------------------- Storage -------------------- */
 
-function toNumberSafe(v: string) {
-  // allows blank -> 0, strips commas/$
-  const cleaned = v.replace(/[^0-9.]/g, "");
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) ? n : 0;
-}
+const STORAGE_KEY = "pb_mobile_v1";
 
-function formatDate(dateISO: string, fmt: DateFormat) {
-  const d = new Date(dateISO);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  if (fmt === "DD/MM/YYYY") return `${dd}/${mm}/${yyyy}`;
-  if (fmt === "YYYY-MM-DD") return `${yyyy}-${mm}-${dd}`;
-  return `${mm}/${dd}/${yyyy}`;
-}
+type Persisted = {
+  settings: Settings;
+  checkedByCycle: Record<string, CheckedState>; // cycleId -> checked state
+  appliedDebtCycles: Record<string, boolean>; // cycleId -> debt applied?
+  activeCycleId?: string;
+};
 
-function uid() {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-const DEFAULT_DATA: AppData = {
-  setupComplete: false,
-
-  paycheckAmount: 0,
+const defaultSettings = (): Settings => ({
   payFrequency: "biweekly",
-  paydayAnchorISO: new Date().toISOString(),
-  dateFormat: "MM/DD/YYYY",
-  paychecksPerMonthEstimate: 2,
-
-  totalDebt: 0,
-  weeklyDebtPaydown: 0,
+  payAmount: 3313,
+  // default anchor: Jan 9, 2026 (matching your web app)
+  anchorISO: "2026-01-09T00:00:00-05:00",
+  twiceMonthlyDay1: 1,
+  twiceMonthlyDay2: 15,
+  monthlyPayDay: 1,
 
   bills: [
-    { id: uid(), name: "Example bill (edit me)", amount: 0, dueDay: 1, type: "bill" },
-    { id: uid(), name: "Monthly expenses (combined)", amount: 0, dueDay: 1, type: "monthly" },
+    { id: "bill_tmobile", name: "T-Mobile", amount: 95, dueDay: 2 },
+    { id: "bill_verizon", name: "Verizon", amount: 95, dueDay: 25 },
+    { id: "bill_statefarm", name: "State Farm", amount: 270, dueDay: 16 },
   ],
+
+  monthlyLabel: "Rent",
+  monthlyAmount: 0,
+
+  savingsPerPay: 500,
+  investingPerPay: 200,
+  fuelPerPay: 500,
+
+  debtRemaining: 33300,
+});
+
+const safeParseNumber = (s: string) => {
+  const n = Number(String(s).replace(/[^0-9.]/g, ""));
+  return Number.isFinite(n) ? n : 0;
 };
 
+const fmtMoney = (n: number) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(
+    Math.max(0, n || 0)
+  );
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
+
+function formatDate(d: Date) {
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/** -------------------- Visual system -------------------- */
+
+const COLORS = {
+  bg: "#070A10",
+  text: "rgba(244,245,247,0.95)",
+  textStrong: "rgba(255,255,255,0.98)",
+  muted: "rgba(185,193,204,0.82)",
+  faint: "rgba(185,193,204,0.58)",
+  border: "rgba(255,255,255,0.12)",
+  borderSoft: "rgba(255,255,255,0.09)",
+  glassA: "rgba(255,255,255,0.085)",
+  glassB: "rgba(255,255,255,0.045)",
+  glassC: "rgba(255,255,255,0.03)",
+  green: "rgba(34,197,94,1)",
+  greenSoft: "rgba(34,197,94,0.16)",
+  redSoft: "rgba(248,113,113,0.14)",
+};
+
+const TYPE = {
+  h1: { fontSize: 18, fontWeight: "900" as const },
+  h2: { fontSize: 14, fontWeight: "900" as const },
+  label: { fontSize: 12, fontWeight: "800" as const },
+  valueLg: { fontSize: 22, fontWeight: "900" as const },
+  valueMd: { fontSize: 16, fontWeight: "900" as const },
+  body: { fontSize: 13, fontWeight: "600" as const },
+};
+
+/** -------------------- Schedule engine (all 4 options) -------------------- */
+
+/**
+ * We compute a "current cycle" based on pay frequency.
+ * - weekly: cycles are 7 days anchored by anchorISO
+ * - biweekly: cycles are 14 days anchored by anchorISO
+ * - twice-monthly: cycles based on two days-of-month (d1, d2)
+ * - monthly: cycles based on one day-of-month
+ *
+ * Each cycle gets a stable ID so we can avoid re-applying debt reduction.
+ */
+
+function cycleIdFromDate(prefix: string, d: Date) {
+  // stable YYYY-MM-DD
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${prefix}_${y}-${m}-${day}`;
+}
+
+function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
+  const n = startOfDay(now);
+
+  if (settings.payFrequency === "weekly" || settings.payFrequency === "biweekly") {
+    const msStep = settings.payFrequency === "weekly" ? 7 * 86400000 : 14 * 86400000;
+    const anchor = startOfDay(new Date(settings.anchorISO));
+    const t = n.getTime();
+    const a = anchor.getTime();
+    const idx = t < a ? 0 : Math.floor((t - a) / msStep);
+    const payday = startOfDay(new Date(a + idx * msStep));
+    const start = payday; // cycle starts on payday
+    const end = addDays(start, settings.payFrequency === "weekly" ? 6 : 13);
+    const id = cycleIdFromDate(settings.payFrequency, payday);
+    const label =
+      settings.payFrequency === "weekly"
+        ? `Week of ${formatDate(payday)}`
+        : `Bi-week of ${formatDate(payday)}`;
+    return { id, label, start, end, payday };
+  }
+
+  if (settings.payFrequency === "twice_monthly") {
+    const d1 = clamp(settings.twiceMonthlyDay1 || 1, 1, 28);
+    const d2 = clamp(settings.twiceMonthlyDay2 || 15, 1, 28);
+    const dayA = Math.min(d1, d2);
+    const dayB = Math.max(d1, d2);
+
+    const year = n.getFullYear();
+    const month = n.getMonth();
+
+    const payA = startOfDay(new Date(year, month, dayA));
+    const payB = startOfDay(new Date(year, month, dayB));
+
+    // Determine most recent payday (A or B) not after today
+    let payday: Date;
+    if (n.getTime() < payA.getTime()) {
+      // go to previous month B
+      const prevMonth = new Date(year, month - 1, 1);
+      payday = startOfDay(new Date(prevMonth.getFullYear(), prevMonth.getMonth(), dayB));
+    } else if (n.getTime() < payB.getTime()) {
+      payday = payA;
+    } else {
+      payday = payB;
+    }
+
+    const start = payday;
+    // end = day before next payday
+    let nextPayday: Date;
+    if (payday.getDate() === dayA) nextPayday = payB;
+    else {
+      const nextMonth = new Date(payday.getFullYear(), payday.getMonth() + 1, 1);
+      nextPayday = startOfDay(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), dayA));
+    }
+    const end = addDays(nextPayday, -1);
+
+    const id = cycleIdFromDate("twice", payday);
+    const label = `Cycle starting ${formatDate(payday)}`;
+    return { id, label, start, end, payday };
+  }
+
+  // monthly
+  const day = clamp(settings.monthlyPayDay || 1, 1, 28);
+  const year = n.getFullYear();
+  const month = n.getMonth();
+  const payThis = startOfDay(new Date(year, month, day));
+
+  let payday: Date;
+  if (n.getTime() < payThis.getTime()) {
+    const prevMonth = new Date(year, month - 1, 1);
+    payday = startOfDay(new Date(prevMonth.getFullYear(), prevMonth.getMonth(), day));
+  } else {
+    payday = payThis;
+  }
+
+  const start = payday;
+  const nextMonth = new Date(payday.getFullYear(), payday.getMonth() + 1, 1);
+  const nextPayday = startOfDay(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), day));
+  const end = addDays(nextPayday, -1);
+
+  const id = cycleIdFromDate("monthly", payday);
+  const label = `Month cycle ${formatDate(payday)}`;
+  return { id, label, start, end, payday };
+}
+
+/** -------------------- Smart bill assignment (dueDay -> cycle) -------------------- */
+
+/**
+ * For the CURRENT cycle, a bill belongs to this cycle if:
+ * - its due date for the month falls within cycle.start..cycle.end
+ *
+ * This works for weekly/biweekly too.
+ */
+function billDueDateForMonth(bill: Bill, ref: Date) {
+  const year = ref.getFullYear();
+  const month = ref.getMonth();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const day = clamp(bill.dueDay || 1, 1, lastDay);
+  return startOfDay(new Date(year, month, day));
+}
+
+function isBetweenInclusive(d: Date, a: Date, b: Date) {
+  const t = d.getTime();
+  return t >= a.getTime() && t <= b.getTime();
+}
+
+/** -------------------- Checklist item generation -------------------- */
+
+type ChecklistItem = {
+  id: string;
+  label: string;
+  amount: number;
+  category: Category;
+  notes?: string;
+};
+
+function buildChecklistForCycle(settings: Settings, cycle: Cycle): ChecklistItem[] {
+  const items: ChecklistItem[] = [];
+
+  // Bills: include bills whose due date in the active cycle range
+  for (const bill of settings.bills || []) {
+    const due = billDueDateForMonth(bill, cycle.start);
+    // if cycle crosses months, check due date for both months
+    const due2 = billDueDateForMonth(bill, cycle.end);
+
+    const inThisCycle =
+      isBetweenInclusive(due, cycle.start, cycle.end) ||
+      isBetweenInclusive(due2, cycle.start, cycle.end);
+
+    if (inThisCycle) {
+      items.push({
+        id: `bill_${bill.id}`,
+        label: `Pay ${bill.name}`,
+        amount: bill.amount,
+        category: "Bills",
+        notes: `Due day ${bill.dueDay}`,
+      });
+    }
+  }
+
+  // Monthly: single item that can represent any monthly expense type
+  if ((settings.monthlyAmount || 0) > 0) {
+    items.push({
+      id: "monthly_single",
+      label: `Monthly: ${settings.monthlyLabel || "Expense"}`,
+      amount: settings.monthlyAmount || 0,
+      category: "Monthly",
+      notes: "One monthly item",
+    });
+  }
+
+  // Per-pay repeats
+  if ((settings.savingsPerPay || 0) > 0) {
+    items.push({
+      id: "save_perpay",
+      label: "Transfer to Savings",
+      amount: settings.savingsPerPay || 0,
+      category: "Savings",
+      notes: "Repeat each pay cycle",
+    });
+  }
+
+  if ((settings.investingPerPay || 0) > 0) {
+    items.push({
+      id: "invest_perpay",
+      label: "Investing",
+      amount: settings.investingPerPay || 0,
+      category: "Investing",
+      notes: "Repeat each pay cycle",
+    });
+  }
+
+  if ((settings.fuelPerPay || 0) > 0) {
+    items.push({
+      id: "fuel_perpay",
+      label: "Fuel / Variable Fund",
+      amount: settings.fuelPerPay || 0,
+      category: "Fuel",
+      notes: "Repeat each pay cycle",
+    });
+  }
+
+  // Debt item is auto-calculated as remainder
+  items.push({
+    id: "debt_paydown",
+    label: "Debt Paydown",
+    amount: 0, // computed later
+    category: "Debt",
+    notes: "Auto-calculated remainder",
+  });
+
+  // Calculate debt paydown = payAmount - everything else
+  const nonDebtTotal = items
+    .filter((i) => i.id !== "debt_paydown")
+    .reduce((sum, i) => sum + (i.amount || 0), 0);
+
+  const debtPay = Math.max(0, (settings.payAmount || 0) - nonDebtTotal);
+
+  // Put computed amount
+  return items.map((i) => (i.id === "debt_paydown" ? { ...i, amount: debtPay } : i));
+}
+
+function groupByCategory(items: ChecklistItem[]) {
+  const map = new Map<Category, ChecklistItem[]>();
+  for (const it of items) {
+    const arr = map.get(it.category) ?? [];
+    arr.push(it);
+    map.set(it.category, arr);
+  }
+  return Array.from(map.entries());
+}
+
+/** -------------------- UI components -------------------- */
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <View
+      style={{
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: COLORS.border,
+        backgroundColor: "transparent",
+        overflow: "hidden",
+      }}
+    >
+      <View
+        style={{
+          padding: 14,
+          backgroundColor: COLORS.glassB,
+          borderTopWidth: 1,
+          borderTopColor: "rgba(255,255,255,0.10)",
+        }}
+      >
+        {children}
+      </View>
+    </View>
+  );
+}
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <View
+      style={{
+        alignSelf: "flex-start",
+        paddingVertical: 6,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: COLORS.borderSoft,
+        backgroundColor: "rgba(255,255,255,0.06)",
+      }}
+    >
+      <Text style={{ color: COLORS.text, fontWeight: "800" }}>{children}</Text>
+    </View>
+  );
+}
+
+function Divider() {
+  return <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.10)", marginVertical: 10 }} />;
+}
+
+function TextBtn({
+  label,
+  onPress,
+  kind = "default",
+}: {
+  label: string;
+  onPress: () => void;
+  kind?: "default" | "green" | "red";
+}) {
+  const bg =
+    kind === "green"
+      ? "rgba(34,197,94,0.18)"
+      : kind === "red"
+      ? "rgba(248,113,113,0.16)"
+      : "rgba(255,255,255,0.06)";
+  const br =
+    kind === "green"
+      ? "rgba(34,197,94,0.30)"
+      : kind === "red"
+      ? "rgba(248,113,113,0.30)"
+      : COLORS.border;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: br,
+        backgroundColor: bg,
+      }}
+    >
+      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  keyboardType = "default",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (s: string) => void;
+  keyboardType?: "default" | "numeric";
+  placeholder?: string;
+}) {
+  return (
+    <View style={{ marginTop: 10 }}>
+      <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        keyboardType={keyboardType}
+        placeholder={placeholder}
+        placeholderTextColor="rgba(185,193,204,0.45)"
+        style={{
+          marginTop: 6,
+          borderWidth: 1,
+          borderColor: COLORS.border,
+          borderRadius: 14,
+          paddingVertical: Platform.OS === "ios" ? 12 : 10,
+          paddingHorizontal: 12,
+          color: COLORS.textStrong,
+          backgroundColor: "rgba(255,255,255,0.05)",
+          fontWeight: "800",
+        }}
+      />
+    </View>
+  );
+}
+
+/** -------------------- App -------------------- */
+
+type Screen = "checklist" | "settings";
+
 export default function App() {
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<AppData>(DEFAULT_DATA);
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
+  );
+}
 
-  const [showSetup, setShowSetup] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+function AppInner() {
+  const insets = useSafeAreaInsets();
 
-  // Date picker UI state
-  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [screen, setScreen] = useState<Screen>("checklist");
 
+  const [loaded, setLoaded] = useState(false);
+  const [settings, setSettings] = useState<Settings>(defaultSettings());
+
+  const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
+  const [appliedDebtCycles, setAppliedDebtCycles] = useState<Record<string, boolean>>({});
+
+  const cycle = useMemo(() => getCurrentCycle(settings, new Date()), [settings]);
+  const activeChecked = checkedByCycle[cycle.id] ?? {};
+
+  const items = useMemo(() => buildChecklistForCycle(settings, cycle), [settings, cycle]);
+  const grouped = useMemo(() => groupByCategory(items), [items]);
+
+  const totals = useMemo(() => {
+    const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
+    const done = items.reduce((sum, i) => (activeChecked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
+    const itemsTotal = items.length;
+    const itemsDone = items.filter((i) => activeChecked[i.id]?.checked).length;
+    const pct = itemsTotal ? Math.round((itemsDone / itemsTotal) * 100) : 0;
+    return { planned, done, itemsTotal, itemsDone, pct };
+  }, [items, activeChecked]);
+
+  // Load from storage on boot
   useEffect(() => {
     (async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (!raw) {
-          setData(DEFAULT_DATA);
-          setShowSetup(true);
-          setLoading(false);
-          return;
+        if (raw) {
+          const parsed = JSON.parse(raw) as Persisted;
+          if (parsed?.settings) setSettings(parsed.settings);
+          if (parsed?.checkedByCycle) setCheckedByCycle(parsed.checkedByCycle);
+          if (parsed?.appliedDebtCycles) setAppliedDebtCycles(parsed.appliedDebtCycles);
         }
-        const parsed = JSON.parse(raw) as AppData;
-        if (!parsed?.setupComplete) {
-          setData({ ...DEFAULT_DATA, ...parsed, setupComplete: false });
-          setShowSetup(true);
-        } else {
-          setData(parsed);
-          setShowSetup(false);
-        }
-      } catch {
-        setData(DEFAULT_DATA);
-        setShowSetup(true);
-      } finally {
-        setLoading(false);
-      }
+      } catch {}
+      setLoaded(true);
     })();
   }, []);
 
-  async function save(next: AppData) {
-    setData(next);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  // Save to storage whenever state changes
+  useEffect(() => {
+    if (!loaded) return;
+    const data: Persisted = {
+      settings,
+      checkedByCycle,
+      appliedDebtCycles,
+      activeCycleId: cycle.id,
+    };
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
+  }, [loaded, settings, checkedByCycle, appliedDebtCycles, cycle.id]);
+
+  function toggleItem(id: string) {
+    setCheckedByCycle((prev) => {
+      const next = { ...prev };
+      const cur = { ...(next[cycle.id] ?? {}) };
+      const was = cur[id]?.checked ?? false;
+      cur[id] = { checked: !was, at: !was ? new Date().toISOString() : undefined };
+      next[cycle.id] = cur;
+      return next;
+    });
   }
 
-  async function resetAll() {
-    Alert.alert("Reset everything?", "This will erase all saved data on this device.", [
+  // Auto-decrease debtRemaining when debt_paydown transitions to checked (once per cycle)
+  const lastDebtAppliedRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!loaded) return;
+
+    const debtItem = items.find((i) => i.id === "debt_paydown");
+    if (!debtItem) return;
+
+    const debtChecked = !!activeChecked["debt_paydown"]?.checked;
+    const alreadyApplied = !!appliedDebtCycles[cycle.id];
+
+    // We only apply if checked and not applied yet
+    if (debtChecked && !alreadyApplied) {
+      const payAmount = debtItem.amount || 0;
+
+      setSettings((s) => ({
+        ...s,
+        debtRemaining: Math.max(0, (s.debtRemaining || 0) - payAmount),
+      }));
+
+      setAppliedDebtCycles((p) => ({ ...p, [cycle.id]: true }));
+    }
+
+    // If user unchecks later, we do NOT auto-add it back (to avoid complexity).
+    // If you want "undo" later, we can implement it.
+  }, [loaded, activeChecked, appliedDebtCycles, cycle.id, items]);
+
+  function resetThisCycle() {
+    Alert.alert("Reset", "Reset this cycle checklist?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Reset",
         style: "destructive",
-        onPress: async () => {
-          await AsyncStorage.removeItem(STORAGE_KEY);
-          setData(DEFAULT_DATA);
-          setShowSettings(false);
-          setShowSetup(true);
+        onPress: () => {
+          setCheckedByCycle((prev) => {
+            const next = { ...prev };
+            next[cycle.id] = {};
+            return next;
+          });
+          // We do NOT reset appliedDebtCycles automatically.
+          // If you reset after applying debt, you would otherwise double-apply later.
         },
       },
     ]);
   }
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.center}>
-          <Text style={styles.title}>Paycheck Buddy</Text>
-          <Text style={styles.muted}>Loading…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (showSetup) {
-    return (
-      <SetupScreen
-        initial={data}
-        onSave={async (next) => {
-          // Keep your rule: all initial values can be 0; user can edit later.
-          const finalData: AppData = { ...next, setupComplete: true };
-          await save(finalData);
-          setShowSetup(false);
-          setShowSettings(false);
-        }}
-      />
-    );
+  function resetEverything() {
+    Alert.alert("Reset ALL", "This clears all saved data and restores defaults. Continue?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Reset ALL",
+        style: "destructive",
+        onPress: async () => {
+          const fresh = defaultSettings();
+          setSettings(fresh);
+          setCheckedByCycle({});
+          setAppliedDebtCycles({});
+          try {
+            await AsyncStorage.removeItem(STORAGE_KEY);
+          } catch {}
+        },
+      },
+    ]);
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.appHeader}>
-        <Text style={styles.title}>Paycheck Buddy</Text>
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <Pressable style={styles.headerBtn} onPress={() => setShowSettings((s) => !s)}>
-            <Text style={styles.headerBtnText}>{showSettings ? "Close" : "Settings"}</Text>
-          </Pressable>
-        </View>
-      </View>
+    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      {/* ✅ Prevent content under status bar (Fold fix) */}
+      <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
-      {showSettings ? (
-        <SettingsScreen
-          data={data}
-          onChange={async (next) => save(next)}
-          onResetAll={resetAll}
-          onReRunSetup={() => setShowSetup(true)}
-        />
-      ) : (
-        <DashboardPlaceholder data={data} />
-      )}
+      <View
+        style={{
+          flex: 1,
+          paddingHorizontal: 16,
+          // ✅ header + content now respects the top inset
+          paddingTop: 10,
+          paddingBottom: 14 + insets.bottom,
+          backgroundColor: COLORS.bg,
+        }}
+      >
+        {/* Top nav */}
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 10,
+            // ✅ add inset so "Paycheck Buddy" never clips on Fold status bar
+            paddingTop: Math.max(0, insets.top),
+          }}
+        >
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Paycheck Buddy</Text>
+
+          <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+            <TextBtn
+              label="Checklist"
+              onPress={() => setScreen("checklist")}
+              kind={screen === "checklist" ? "green" : "default"}
+            />
+            <TextBtn
+              label="Settings"
+              onPress={() => setScreen("settings")}
+              kind={screen === "settings" ? "green" : "default"}
+            />
+          </View>
+        </View>
+
+        <ScrollView
+          style={{ marginTop: 12 }}
+          contentContainerStyle={{
+            paddingBottom: 30,
+            // ✅ a little breathing room under the header on devices with big insets
+            paddingTop: 2,
+          }}
+          showsVerticalScrollIndicator={false}
+        >
+          {screen === "checklist" ? (
+            <>
+              {/* Summary */}
+              <Card>
+                <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                  {cycle.label} • Payday:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>{formatDate(cycle.payday)}</Text>
+                </Text>
+
+                <Divider />
+
+                <View style={{ gap: 10 }}>
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
+                    <Chip>{fmtMoney(settings.payAmount)}</Chip>
+                  </View>
+
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Debt remaining</Text>
+                    <Chip>{fmtMoney(settings.debtRemaining)}</Chip>
+                  </View>
+
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Planned</Text>
+                    <Chip>{fmtMoney(totals.planned)}</Chip>
+                  </View>
+
+                  <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                    <Text style={{ color: COLORS.muted, ...TYPE.label }}>Completed</Text>
+                    <Chip>{fmtMoney(totals.done)}</Chip>
+                  </View>
+
+                  <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                    Progress:{" "}
+                    <Text style={{ color: COLORS.textStrong }}>
+                      {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                    </Text>
+                  </Text>
+                </View>
+
+                <Divider />
+
+                <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                  <TextBtn label="Reset this cycle" onPress={resetThisCycle} />
+                  <TextBtn label="Reset ALL" onPress={resetEverything} kind="red" />
+                </View>
+              </Card>
+
+              {/* Checklist */}
+              <View style={{ marginTop: 12, gap: 12 }}>
+                {grouped.map(([cat, catItems]) => {
+                  const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
+                  return (
+                    <Card key={cat}>
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{cat}</Text>
+                        <Chip>{fmtMoney(plannedForCat)} planned</Chip>
+                      </View>
+
+                      <Divider />
+
+                      <View style={{ gap: 10 }}>
+                        {catItems.map((it) => {
+                          const state = activeChecked[it.id];
+                          const isChecked = !!state?.checked;
+
+                          return (
+                            <Pressable
+                              key={it.id}
+                              onPress={() => toggleItem(it.id)}
+                              style={{
+                                padding: 12,
+                                borderRadius: 16,
+                                borderWidth: 1,
+                                borderColor: COLORS.borderSoft,
+                                backgroundColor: isChecked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
+                              }}
+                            >
+                              <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                    {isChecked ? "✅ " : "⬜ "} {it.label}
+                                  </Text>
+                                  <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                    {fmtMoney(it.amount)}
+                                    {it.notes ? ` • ${it.notes}` : ""}
+                                    {isChecked && state?.at
+                                      ? ` • checked ${new Date(state.at).toLocaleString()}`
+                                      : ""}
+                                  </Text>
+                                </View>
+                                <Chip>{fmtMoney(it.amount)}</Chip>
+                              </View>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </Card>
+                  );
+                })}
+              </View>
+
+              <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
+                Offline • Saved on-device
+              </Text>
+            </>
+          ) : (
+            <SettingsScreen settings={settings} onChange={setSettings} onBack={() => setScreen("checklist")} />
+          )}
+        </ScrollView>
+      </View>
     </SafeAreaView>
   );
 }
 
-/** ---------------- Setup Screen ---------------- */
+/** -------------------- Settings screen -------------------- */
 
-function SetupScreen({
-  initial,
-  onSave,
+function SettingsScreen({
+  settings,
+  onChange,
+  onBack,
 }: {
-  initial: AppData;
-  onSave: (next: AppData) => void;
+  settings: Settings;
+  onChange: (s: Settings) => void;
+  onBack: () => void;
 }) {
-  const [draft, setDraft] = useState<AppData>(() => ({
-    ...DEFAULT_DATA,
-    ...initial,
-    setupComplete: false,
-    // ensure defaults are 0 even if missing
-    paycheckAmount: initial.paycheckAmount ?? 0,
-    totalDebt: initial.totalDebt ?? 0,
-    weeklyDebtPaydown: initial.weeklyDebtPaydown ?? 0,
-  }));
+  const [local, setLocal] = useState<Settings>(settings);
 
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
-  const [showDatePicker, setShowDatePicker] = useState(false);
+  useEffect(() => setLocal(settings), [settings]);
 
-  const paychecksPerMonthEstimate = useMemo(() => {
-    const f = draft.payFrequency;
-    if (f === "weekly") return 4;
-    if (f === "biweekly") return 2;
-    if (f === "semimonthly") return 2;
-    return 1;
-  }, [draft.payFrequency]);
+  function save() {
+    // Basic validation
+    if (local.payAmount < 0) {
+      Alert.alert("Invalid", "Pay amount must be >= 0");
+      return;
+    }
+    if (local.debtRemaining < 0) {
+      Alert.alert("Invalid", "Debt remaining must be >= 0");
+      return;
+    }
+    if (local.twiceMonthlyDay1 < 1 || local.twiceMonthlyDay1 > 28) {
+      Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
+      return;
+    }
+    if (local.twiceMonthlyDay2 < 1 || local.twiceMonthlyDay2 > 28) {
+      Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
+      return;
+    }
+    if (local.monthlyPayDay < 1 || local.monthlyPayDay > 28) {
+      Alert.alert("Invalid", "Monthly payday must be 1–28");
+      return;
+    }
 
-  useEffect(() => {
-    setDraft((d) => ({ ...d, paychecksPerMonthEstimate }));
-  }, [paychecksPerMonthEstimate]);
+    onChange(local);
+    Alert.alert("Saved", "Settings saved to device.");
+    onBack();
+  }
 
-  function setBill(id: string, patch: Partial<Bill>) {
-    setDraft((d) => ({
-      ...d,
-      bills: d.bills.map((b) => (b.id === id ? { ...b, ...patch } : b)),
+  function setFreq(f: PayFrequency) {
+    setLocal((s) => ({ ...s, payFrequency: f }));
+  }
+
+  function updateBill(billId: string, patch: Partial<Bill>) {
+    setLocal((s) => ({
+      ...s,
+      bills: (s.bills || []).map((b) => (b.id === billId ? { ...b, ...patch } : b)),
     }));
   }
 
-  function addBill(type: Bill["type"]) {
-    setDraft((d) => ({
-      ...d,
-      bills: [
-        ...d.bills,
-        {
-          id: uid(),
-          name: type === "monthly" ? "Monthly expenses (combined)" : "New bill",
-          amount: 0,
-          dueDay: 1,
-          type,
-        },
-      ],
+  function addBill() {
+    const id = `bill_${Date.now()}`;
+    setLocal((s) => ({
+      ...s,
+      bills: [...(s.bills || []), { id, name: "New Bill", amount: 0, dueDay: 1 }],
     }));
   }
 
   function removeBill(id: string) {
-    setDraft((d) => ({
-      ...d,
-      bills: d.bills.filter((b) => b.id !== id),
+    setLocal((s) => ({
+      ...s,
+      bills: (s.bills || []).filter((b) => b.id !== id),
     }));
   }
 
-  function onPickDate(_e: DateTimePickerEvent, selected?: Date) {
-    if (Platform.OS !== "ios") setShowDatePicker(false);
-    if (!selected) return;
-    setDraft((d) => ({ ...d, paydayAnchorISO: selected.toISOString() }));
-  }
-
-  const canNext = true; // you said defaults can be 0, so we allow progressing even with 0s
+  const freqLabel = (f: PayFrequency) => {
+    if (f === "weekly") return "Weekly";
+    if (f === "biweekly") return "Bi-weekly";
+    if (f === "twice_monthly") return "Twice-monthly";
+    return "Monthly";
+  };
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.appHeader}>
-        <Text style={styles.title}>First-time setup</Text>
-        <Text style={styles.muted}>Everything is stored on this device (offline).</Text>
+    <View style={{ gap: 12 }}>
+      <Card>
+        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Pay schedule</Text>
+        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+          Choose one of the 4 options.
+        </Text>
+
+        <Divider />
+
+        <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+          {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
+            <TextBtn
+              key={f}
+              label={freqLabel(f)}
+              onPress={() => setFreq(f)}
+              kind={local.payFrequency === f ? "green" : "default"}
+            />
+          ))}
+        </View>
+
+        <Field
+          label="Pay amount (per pay event)"
+          value={String(local.payAmount)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, payAmount: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="3313"
+        />
+
+        {local.payFrequency === "weekly" || local.payFrequency === "biweekly" ? (
+          <>
+            <Field
+              label="Anchor payday (ISO date)"
+              value={local.anchorISO}
+              onChangeText={(s) => setLocal((p) => ({ ...p, anchorISO: s }))}
+              placeholder="2026-01-09T00:00:00-05:00"
+            />
+            <Text style={{ color: COLORS.faint, marginTop: 6, fontWeight: "700" }}>
+              Tip: keep this as your first payday date. Cycles repeat from here.
+            </Text>
+          </>
+        ) : null}
+
+        {local.payFrequency === "twice_monthly" ? (
+          <>
+            <Field
+              label="Twice-monthly payday #1 (1–28)"
+              value={String(local.twiceMonthlyDay1)}
+              onChangeText={(s) =>
+                setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
+              }
+              keyboardType="numeric"
+              placeholder="1"
+            />
+            <Field
+              label="Twice-monthly payday #2 (1–28)"
+              value={String(local.twiceMonthlyDay2)}
+              onChangeText={(s) =>
+                setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
+              }
+              keyboardType="numeric"
+              placeholder="15"
+            />
+          </>
+        ) : null}
+
+        {local.payFrequency === "monthly" ? (
+          <>
+            <Field
+              label="Monthly payday (1–28)"
+              value={String(local.monthlyPayDay)}
+              onChangeText={(s) =>
+                setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
+              }
+              keyboardType="numeric"
+              placeholder="1"
+            />
+          </>
+        ) : null}
+      </Card>
+
+      <Card>
+        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
+        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+          One total debt, auto-decreases when you check Debt Paydown.
+        </Text>
+
+        <Divider />
+
+        <Field
+          label="Debt remaining"
+          value={String(local.debtRemaining)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="33300"
+        />
+
+        <Divider />
+
+        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Per-pay allocations</Text>
+
+        <Field
+          label="Savings per pay"
+          value={String(local.savingsPerPay)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, savingsPerPay: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="500"
+        />
+        <Field
+          label="Investing per pay"
+          value={String(local.investingPerPay)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, investingPerPay: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="200"
+        />
+        <Field
+          label="Fuel per pay"
+          value={String(local.fuelPerPay)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, fuelPerPay: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="500"
+        />
+      </Card>
+
+      <Card>
+        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly (single checklist item)</Text>
+        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+          Select what “Monthly” represents. It still shows as ONE item in the checklist.
+        </Text>
+
+        <Divider />
+
+        <Field
+          label="Monthly label (e.g., Rent / Groceries / Other)"
+          value={local.monthlyLabel}
+          onChangeText={(s) => setLocal((p) => ({ ...p, monthlyLabel: s }))}
+          placeholder="Rent"
+        />
+        <Field
+          label="Monthly amount"
+          value={String(local.monthlyAmount)}
+          onChangeText={(s) => setLocal((p) => ({ ...p, monthlyAmount: safeParseNumber(s) }))}
+          keyboardType="numeric"
+          placeholder="0"
+        />
+      </Card>
+
+      <Card>
+        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Bills (due day)</Text>
+        <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+          Bills show up automatically in the cycle that contains their due date.
+        </Text>
+
+        <Divider />
+
+        <View style={{ gap: 12 }}>
+          {(local.bills || []).map((b) => (
+            <View
+              key={b.id}
+              style={{
+                borderWidth: 1,
+                borderColor: COLORS.borderSoft,
+                borderRadius: 16,
+                padding: 12,
+                backgroundColor: "rgba(255,255,255,0.03)",
+              }}
+            >
+              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Bill</Text>
+
+              <Field label="Name" value={b.name} onChangeText={(s) => updateBill(b.id, { name: s })} placeholder="Verizon" />
+              <Field
+                label="Amount"
+                value={String(b.amount)}
+                onChangeText={(s) => updateBill(b.id, { amount: safeParseNumber(s) })}
+                keyboardType="numeric"
+                placeholder="95"
+              />
+              <Field
+                label="Due day (1–31)"
+                value={String(b.dueDay)}
+                onChangeText={(s) => updateBill(b.id, { dueDay: clamp(safeParseNumber(s), 1, 31) })}
+                keyboardType="numeric"
+                placeholder="25"
+              />
+
+              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                <TextBtn label="Remove bill" onPress={() => removeBill(b.id)} kind="red" />
+              </View>
+            </View>
+          ))}
+
+          <TextBtn label="Add bill" onPress={addBill} />
+        </View>
+      </Card>
+
+      <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+        <TextBtn label="Save settings" onPress={save} kind="green" />
+        <TextBtn label="Back" onPress={onBack} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.container}>
-        <View style={styles.stepRow}>
-          <StepPill active={step === 1} label="Pay" />
-          <StepPill active={step === 2} label="Debt" />
-          <StepPill active={step === 3} label="Bills" />
-          <StepPill active={step === 4} label="Monthly" />
-        </View>
-
-        {step === 1 && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Pay / Income</Text>
-
-            <Text style={styles.label}>Paycheck amount (default 0)</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              value={String(draft.paycheckAmount || 0)}
-              onChangeText={(t) => setDraft((d) => ({ ...d, paycheckAmount: toNumberSafe(t) }))}
-            />
-            <Text style={styles.helper}>This is the amount you get per paycheck.</Text>
-
-            <Text style={[styles.label, { marginTop: 14 }]}>Pay frequency</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={draft.payFrequency}
-                onValueChange={(v) => setDraft((d) => ({ ...d, payFrequency: v as PayFrequency }))}
-                dropdownIconColor="rgba(255,255,255,0.9)"
-                style={styles.picker}
-              >
-                <Picker.Item label="Weekly" value="weekly" />
-                <Picker.Item label="Bi-weekly (every 2 weeks)" value="biweekly" />
-                <Picker.Item label="Semi-monthly (twice per month)" value="semimonthly" />
-                <Picker.Item label="Monthly" value="monthly" />
-              </Picker>
-            </View>
-
-            <Text style={[styles.label, { marginTop: 14 }]}>Date format</Text>
-            <View style={styles.pickerWrap}>
-              <Picker
-                selectedValue={draft.dateFormat}
-                onValueChange={(v) => setDraft((d) => ({ ...d, dateFormat: v as DateFormat }))}
-                dropdownIconColor="rgba(255,255,255,0.9)"
-                style={styles.picker}
-              >
-                <Picker.Item label="MM/DD/YYYY" value="MM/DD/YYYY" />
-                <Picker.Item label="DD/MM/YYYY" value="DD/MM/YYYY" />
-                <Picker.Item label="YYYY-MM-DD" value="YYYY-MM-DD" />
-              </Picker>
-            </View>
-
-            <Text style={[styles.label, { marginTop: 14 }]}>Payday anchor date</Text>
-            <Pressable style={styles.dateButton} onPress={() => setShowDatePicker(true)}>
-              <Text style={styles.dateButtonText}>
-                {formatDate(draft.paydayAnchorISO, draft.dateFormat)}
-              </Text>
-              <Text style={styles.muted}>Tap to select</Text>
-            </Pressable>
-
-            {showDatePicker && (
-              <DateTimePicker
-                value={new Date(draft.paydayAnchorISO)}
-                mode="date"
-                display={Platform.OS === "ios" ? "spinner" : "default"}
-                onChange={onPickDate}
-              />
-            )}
-
-            <Text style={[styles.helper, { marginTop: 10 }]}>
-              We use this date to calculate future pay cycles for your checklists.
-            </Text>
-          </View>
-        )}
-
-        {step === 2 && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Debt</Text>
-
-            <Text style={styles.label}>Total debt (default 0)</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              value={String(draft.totalDebt || 0)}
-              onChangeText={(t) => setDraft((d) => ({ ...d, totalDebt: toNumberSafe(t) }))}
-            />
-            <Text style={styles.helper}>One total debt number (not broken up).</Text>
-
-            <Text style={[styles.label, { marginTop: 14 }]}>Weekly debt paydown (optional, default 0)</Text>
-            <TextInput
-              style={styles.input}
-              keyboardType="numeric"
-              placeholder="0"
-              placeholderTextColor="rgba(255,255,255,0.35)"
-              value={String(draft.weeklyDebtPaydown || 0)}
-              onChangeText={(t) => setDraft((d) => ({ ...d, weeklyDebtPaydown: toNumberSafe(t) }))}
-            />
-            <Text style={styles.helper}>
-              If you enter a number here, the app can auto-decrease your debt weekly (later we’ll wire the logic into your checklist/history).
-            </Text>
-
-            <View style={styles.rowBetween}>
-              <Text style={styles.muted}>Preview</Text>
-              <Text style={styles.value}>{money(draft.totalDebt)}</Text>
-            </View>
-          </View>
-        )}
-
-        {step === 3 && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Bills (each defaults to $0)</Text>
-            <Text style={styles.helper}>
-              Add your recurring bills. Amount can stay 0 for now.
-            </Text>
-
-            {draft.bills
-              .filter((b) => b.type === "bill")
-              .map((b) => (
-                <View key={b.id} style={styles.billCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.label}>Bill name</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={b.name}
-                      onChangeText={(t) => setBill(b.id, { name: t })}
-                      placeholder="Rent / Phone / Insurance"
-                      placeholderTextColor="rgba(255,255,255,0.35)"
-                    />
-
-                    <Text style={[styles.label, { marginTop: 10 }]}>Amount</Text>
-                    <TextInput
-                      style={styles.input}
-                      keyboardType="numeric"
-                      value={String(b.amount || 0)}
-                      onChangeText={(t) => setBill(b.id, { amount: toNumberSafe(t) })}
-                      placeholder="0"
-                      placeholderTextColor="rgba(255,255,255,0.35)"
-                    />
-
-                    <Text style={[styles.label, { marginTop: 10 }]}>Due day (1–31)</Text>
-                    <View style={styles.pickerWrap}>
-                      <Picker
-                        selectedValue={b.dueDay}
-                        onValueChange={(v) => setBill(b.id, { dueDay: clampInt(Number(v), 1, 31) })}
-                        dropdownIconColor="rgba(255,255,255,0.9)"
-                        style={styles.picker}
-                      >
-                        {Array.from({ length: 31 }).map((_, i) => {
-                          const day = i + 1;
-                          return <Picker.Item key={day} label={`${day}`} value={day} />;
-                        })}
-                      </Picker>
-                    </View>
-                  </View>
-
-                  <Pressable style={styles.deleteBtn} onPress={() => removeBill(b.id)}>
-                    <Text style={styles.deleteBtnText}>Delete</Text>
-                  </Pressable>
-                </View>
-              ))}
-
-            <Pressable style={styles.primaryBtn} onPress={() => addBill("bill")}>
-              <Text style={styles.primaryBtnText}>+ Add bill</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {step === 4 && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Monthly expenses (combined)</Text>
-            <Text style={styles.helper}>
-              This stays as one combined item in your checklist (your requirement).
-            </Text>
-
-            {draft.bills
-              .filter((b) => b.type === "monthly")
-              .slice(0, 1)
-              .map((b) => (
-                <View key={b.id} style={styles.billCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.label}>Label</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={b.name}
-                      onChangeText={(t) => setBill(b.id, { name: t })}
-                      placeholder="Monthly expenses"
-                      placeholderTextColor="rgba(255,255,255,0.35)"
-                    />
-
-                    <Text style={[styles.label, { marginTop: 10 }]}>Monthly total (default 0)</Text>
-                    <TextInput
-                      style={styles.input}
-                      keyboardType="numeric"
-                      value={String(b.amount || 0)}
-                      onChangeText={(t) => setBill(b.id, { amount: toNumberSafe(t) })}
-                      placeholder="0"
-                      placeholderTextColor="rgba(255,255,255,0.35)"
-                    />
-
-                    <Text style={[styles.label, { marginTop: 10 }]}>“Due day” (used for planning)</Text>
-                    <View style={styles.pickerWrap}>
-                      <Picker
-                        selectedValue={b.dueDay}
-                        onValueChange={(v) => setBill(b.id, { dueDay: clampInt(Number(v), 1, 31) })}
-                        dropdownIconColor="rgba(255,255,255,0.9)"
-                        style={styles.picker}
-                      >
-                        {Array.from({ length: 31 }).map((_, i) => {
-                          const day = i + 1;
-                          return <Picker.Item key={day} label={`${day}`} value={day} />;
-                        })}
-                      </Picker>
-                    </View>
-                  </View>
-                </View>
-              ))}
-
-            <View style={styles.summaryBox}>
-              <Text style={styles.muted}>Summary</Text>
-              <Text style={styles.summaryLine}>Paycheck: {money(draft.paycheckAmount)}</Text>
-              <Text style={styles.summaryLine}>Frequency: {draft.payFrequency}</Text>
-              <Text style={styles.summaryLine}>Debt: {money(draft.totalDebt)}</Text>
-              <Text style={styles.summaryLine}>
-                Bills count: {draft.bills.filter((b) => b.type === "bill").length}
-              </Text>
-              <Text style={styles.summaryLine}>
-                Monthly combined: {money(draft.bills.find((b) => b.type === "monthly")?.amount ?? 0)}
-              </Text>
-            </View>
-
-            <Pressable
-              style={[styles.primaryBtn, { marginTop: 12 }]}
-              onPress={() => onSave(draft)}
-            >
-              <Text style={styles.primaryBtnText}>Finish setup</Text>
-            </Pressable>
-
-            <Text style={[styles.helper, { marginTop: 10 }]}>
-              You can change everything later in Settings.
-            </Text>
-          </View>
-        )}
-
-        <View style={styles.navRow}>
-          <Pressable
-            style={[styles.secondaryBtn, step === 1 && { opacity: 0.4 }]}
-            disabled={step === 1}
-            onPress={() => setStep((s) => (s === 1 ? 1 : ((s - 1) as any)))}
-          >
-            <Text style={styles.secondaryBtnText}>Back</Text>
-          </Pressable>
-
-          <Pressable
-            style={[styles.primaryBtn, !canNext && { opacity: 0.4 }]}
-            disabled={!canNext}
-            onPress={() => {
-              if (step === 4) return;
-              setStep((s) => ((s + 1) as any));
-            }}
-          >
-            <Text style={styles.primaryBtnText}>{step === 4 ? "Done" : "Next"}</Text>
-          </Pressable>
-        </View>
-
-        <Text style={[styles.muted, { marginTop: 16, textAlign: "center" }]}>
-          Tip: It’s okay to leave everything as 0 — you can fill it in later.
-        </Text>
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-function StepPill({ active, label }: { active: boolean; label: string }) {
-  return (
-    <View style={[styles.pill, active ? styles.pillActive : styles.pillInactive]}>
-      <Text style={styles.pillText}>{label}</Text>
+      <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
+        Offline • Saved on-device
+      </Text>
     </View>
   );
 }
-
-/** ---------------- Settings Screen ---------------- */
-
-function SettingsScreen({
-  data,
-  onChange,
-  onResetAll,
-  onReRunSetup,
-}: {
-  data: AppData;
-  onChange: (next: AppData) => void;
-  onResetAll: () => void;
-  onReRunSetup: () => void;
-}) {
-  return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Settings</Text>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Paycheck amount</Text>
-          <Text style={styles.value}>{money(data.paycheckAmount)}</Text>
-        </View>
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Frequency</Text>
-          <Text style={styles.value}>{data.payFrequency}</Text>
-        </View>
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Anchor date</Text>
-          <Text style={styles.value}>{formatDate(data.paydayAnchorISO, data.dateFormat)}</Text>
-        </View>
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Total debt</Text>
-          <Text style={styles.value}>{money(data.totalDebt)}</Text>
-        </View>
-
-        <Pressable style={styles.primaryBtn} onPress={onReRunSetup}>
-          <Text style={styles.primaryBtnText}>Edit setup</Text>
-        </Pressable>
-
-        <Pressable style={styles.dangerBtn} onPress={onResetAll}>
-          <Text style={styles.dangerBtnText}>Reset all data</Text>
-        </Pressable>
-
-        <Text style={[styles.helper, { marginTop: 10 }]}>
-          Next step: we’ll wire this saved data into your existing checklist logic (Bills dueDay, monthly combined, one debt number).
-        </Text>
-      </View>
-    </ScrollView>
-  );
-}
-
-/** ---------------- Dashboard Placeholder ----------------
- * This is where we plug in your current checklist logic next.
- * For now, it proves the setup + persistence works.
- */
-
-function DashboardPlaceholder({ data }: { data: AppData }) {
-  const billsTotal = data.bills.filter((b) => b.type === "bill").reduce((s, b) => s + (b.amount || 0), 0);
-  const monthly = data.bills.find((b) => b.type === "monthly")?.amount ?? 0;
-
-  return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Dashboard</Text>
-        <Text style={styles.muted}>Saved on-device • offline</Text>
-
-        <View style={{ height: 12 }} />
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Paycheck</Text>
-          <Text style={styles.value}>{money(data.paycheckAmount)}</Text>
-        </View>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Frequency</Text>
-          <Text style={styles.value}>{data.payFrequency}</Text>
-        </View>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Anchor date</Text>
-          <Text style={styles.value}>{formatDate(data.paydayAnchorISO, data.dateFormat)}</Text>
-        </View>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Total debt</Text>
-          <Text style={styles.value}>{money(data.totalDebt)}</Text>
-        </View>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Bills total</Text>
-          <Text style={styles.value}>{money(billsTotal)}</Text>
-        </View>
-
-        <View style={styles.rowBetween}>
-          <Text style={styles.muted}>Monthly combined</Text>
-          <Text style={styles.value}>{money(monthly)}</Text>
-        </View>
-
-        <Text style={[styles.helper, { marginTop: 12 }]}>
-          Next, I’ll paste the full “real” checklist dashboard that matches your current web logic (Bills dueDay + monthly combined + one total debt auto-decreasing).
-        </Text>
-      </View>
-    </ScrollView>
-  );
-}
-
-/** ---------------- Styles ---------------- */
-
-const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#070A10" },
-
-  appHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-
-  title: { color: "rgba(255,255,255,0.96)", fontSize: 20, fontWeight: "800" },
-  muted: { color: "rgba(185,193,204,0.80)", marginTop: 4 },
-
-  container: { padding: 16, gap: 12 },
-
-  card: {
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderRadius: 18,
-    padding: 14,
-  },
-  cardTitle: { color: "rgba(255,255,255,0.96)", fontSize: 16, fontWeight: "800", marginBottom: 10 },
-
-  label: { color: "rgba(255,255,255,0.90)", fontSize: 13, fontWeight: "700" },
-  helper: { color: "rgba(185,193,204,0.75)", fontSize: 12, marginTop: 6 },
-
-  input: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(0,0,0,0.25)",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 14,
-    color: "rgba(255,255,255,0.95)",
-    fontSize: 14,
-  },
-
-  pickerWrap: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(0,0,0,0.25)",
-    borderRadius: 14,
-    overflow: "hidden",
-  },
-  picker: { color: "rgba(255,255,255,0.95)" },
-
-  dateButton: {
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: "rgba(0,0,0,0.25)",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  dateButtonText: { color: "rgba(255,255,255,0.95)", fontSize: 14, fontWeight: "700" },
-
-  rowBetween: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 10 },
-  value: { color: "rgba(255,255,255,0.95)", fontSize: 14, fontWeight: "800" },
-
-  primaryBtn: {
-    marginTop: 12,
-    backgroundColor: "rgba(34,197,94,0.20)",
-    borderWidth: 1,
-    borderColor: "rgba(34,197,94,0.35)",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
-  },
-  primaryBtnText: { color: "rgba(236,253,245,1)", fontWeight: "900" },
-
-  secondaryBtn: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
-    flex: 1,
-  },
-  secondaryBtnText: { color: "rgba(255,255,255,0.90)", fontWeight: "800" },
-
-  dangerBtn: {
-    marginTop: 10,
-    backgroundColor: "rgba(248,113,113,0.14)",
-    borderWidth: 1,
-    borderColor: "rgba(248,113,113,0.30)",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
-  },
-  dangerBtnText: { color: "rgba(254,202,202,1)", fontWeight: "900" },
-
-  headerBtn: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-  },
-  headerBtnText: { color: "rgba(255,255,255,0.9)", fontWeight: "800" },
-
-  navRow: { flexDirection: "row", gap: 10, marginTop: 6 },
-
-  stepRow: { flexDirection: "row", gap: 8, marginBottom: 6 },
-  pill: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999 },
-  pillActive: { backgroundColor: "rgba(34,197,94,0.20)", borderWidth: 1, borderColor: "rgba(34,197,94,0.30)" },
-  pillInactive: { backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "rgba(255,255,255,0.10)" },
-  pillText: { color: "rgba(255,255,255,0.9)", fontWeight: "800", fontSize: 12 },
-
-  billCard: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderRadius: 16,
-    padding: 12,
-    gap: 8,
-  },
-
-  deleteBtn: {
-    alignSelf: "flex-start",
-    marginTop: 8,
-    backgroundColor: "rgba(248,113,113,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(248,113,113,0.25)",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-  },
-  deleteBtnText: { color: "rgba(254,202,202,1)", fontWeight: "900" },
-
-  summaryBox: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "rgba(0,0,0,0.18)",
-    borderRadius: 16,
-    padding: 12,
-    gap: 6,
-  },
-  summaryLine: { color: "rgba(255,255,255,0.90)", fontWeight: "700" },
-
-  center: { flex: 1, alignItems: "center", justifyContent: "center", padding: 16 },
-});
