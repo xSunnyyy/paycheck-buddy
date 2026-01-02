@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Paycheck Buddy",
-    "slug": "paycheck-buddy-mobile",
+    "name": "PayFlow",
+    "slug": "PayFlow-mobile",
     "version": "1.0.0",
 
       "icon": "./assets/icons/icon.png",
@@ -9,7 +9,7 @@
     "platforms": ["ios", "android", "web"],
 
     "android": {
-      "package": "com.sunny.paycheckbuddy",
+      "package": "com.sunny.payflow",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icons/icon.png",
         "backgroundColor": "#070A10"
