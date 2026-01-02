@@ -24,25 +24,26 @@ import {
  * PAYCHECK BUDDY — OFFLINE ANDROID APP (Expo)
  * ✅ Includes:
  * - First-time setup gate (hasCompletedSetup)
- * - Anchor payday for weekly/biweekly (no auto-open)
- * - Paycheck Distributions (formerly allocations)
- * - Monthly Expenses list (multiple) ✅ NOW with dueDay + cycle assignment like bills
- * - Scroll focused inputs above keyboard (Settings + Checklist + Unexpected)
+ * - Payday (weekly/biweekly anchor)
+ * - Paycheck Distributions (per-pay)
+ * - Personal Spending (per-pay) ✅ NEW
+ * - Monthly Expenses list (multiple) with dueDay + cycle assignment like bills
+ * - Scroll focused inputs above keyboard (Settings + Dashboard + Unexpected)
  * - Debt auto-decreases once per cycle when "Debt Paydown" is checked
- * - Unexpected Expenses per-cycle (collapsible) on checklist
+ * - Unexpected Expenses per-cycle (collapsible) on dashboard
  * - History: last 10 cycles + detail view
- * - Checklist cycle navigation: Prev / This / Next (see bills due in that paycheck)
+ * - Cycle navigation: Prev / This / Next
  *
- * ✅ UX fixes:
- * - Bill due day input allows deleting/typing "20" etc (no forced "1" issue)
- * - New Bill/Monthly/Distribution start with EMPTY name so you can type immediately
- * - Top nav centered: Checklist / History / Settings (no app name)
+ * ✅ UX:
+ * - Due day input allows deleting/typing (no forced "1")
+ * - New Bill/Monthly/Distribution/Personal start with EMPTY name
+ * - Top nav centered: Dashboard / History / Settings (no app name)
  */
 
 /** -------------------- Types -------------------- */
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
-type Category = "Bills" | "Monthly" | "Allocations" | "Debt";
+type Category = "Bills" | "Monthly" | "Allocations" | "Personal" | "Debt";
 
 type Bill = {
   id: string;
@@ -52,6 +53,12 @@ type Bill = {
 };
 
 type Allocation = {
+  id: string;
+  label: string;
+  amount: number;
+};
+
+type PersonalSpendingItem = {
   id: string;
   label: string;
   amount: number;
@@ -69,6 +76,7 @@ type Settings = {
 
   payAmount: number;
 
+  // weekly/biweekly anchor payday (renamed in UI to "Payday")
   anchorISO: string;
 
   twiceMonthlyDay1: number; // 1–28
@@ -81,6 +89,9 @@ type Settings = {
   monthlyItems: MonthlyItem[];
 
   allocations: Allocation[];
+
+  // ✅ NEW
+  personalSpending: PersonalSpendingItem[];
 
   debtRemaining: number;
 };
@@ -104,7 +115,7 @@ type UnexpectedExpense = {
 
 /** -------------------- Storage -------------------- */
 
-const STORAGE_KEY = "pb_mobile_v6";
+const STORAGE_KEY = "pb_mobile_v7";
 
 type Persisted = {
   hasCompletedSetup: boolean;
@@ -125,6 +136,7 @@ const defaultSettings = (): Settings => ({
   bills: [],
   monthlyItems: [],
   allocations: [],
+  personalSpending: [],
   debtRemaining: 0,
 });
 
@@ -298,7 +310,6 @@ function getCurrentCycle(settings: Settings, now = new Date()): Cycle {
 }
 
 /**
- * ✅ Works for all frequencies
  * offset = 0 current cycle
  * offset = +1 next cycle
  * offset = -1 previous cycle
@@ -309,7 +320,6 @@ function getCycleWithOffset(settings: Settings, now: Date, offset: number): Cycl
 
   if (offset > 0) {
     for (let i = 0; i < offset; i++) {
-      // move to day after end then compute cycle again
       const probe = addDays(c.end, 1);
       c = getCurrentCycle(settings, probe);
     }
@@ -317,7 +327,6 @@ function getCycleWithOffset(settings: Settings, now: Date, offset: number): Cycl
   }
 
   for (let i = 0; i < Math.abs(offset); i++) {
-    // move to day before start then compute cycle again
     const probe = addDays(c.start, -1);
     c = getCurrentCycle(settings, probe);
   }
@@ -357,7 +366,7 @@ function isBetweenInclusive(d: Date, a: Date, b: Date) {
   return t >= a.getTime() && t <= b.getTime();
 }
 
-/** -------------------- Checklist items -------------------- */
+/** -------------------- Dashboard items -------------------- */
 
 type ChecklistItem = {
   id: string;
@@ -394,7 +403,7 @@ function buildChecklistForCycle(
     }
   }
 
-  // ✅ Monthly items behave like bills now (dueDay -> appears in correct cycle)
+  // Monthly items behave like bills now (dueDay -> appears in correct cycle)
   for (const m of settings.monthlyItems || []) {
     const dueA = dueDateForMonth(m.dueDay || 1, cycle.start);
     const dueB = dueDateForMonth(m.dueDay || 1, cycle.end);
@@ -424,6 +433,20 @@ function buildChecklistForCycle(
         amount: amt,
         category: "Allocations",
         notes: "Per-pay distribution",
+      });
+    }
+  }
+
+  // ✅ NEW: Personal Spending (per-pay)
+  for (const p of settings.personalSpending || []) {
+    const amt = p.amount || 0;
+    if (amt > 0) {
+      items.push({
+        id: `ps_${p.id}`,
+        label: p.label || "Personal",
+        amount: amt,
+        category: "Personal",
+        notes: "Per-pay personal spending",
       });
     }
   }
@@ -460,7 +483,9 @@ function groupByCategory(items: ChecklistItem[]) {
 }
 
 function displayCategory(cat: Category) {
-  return cat === "Allocations" ? "Paycheck Distributions" : cat;
+  if (cat === "Allocations") return "Paycheck Distributions";
+  if (cat === "Personal") return "Personal Spending";
+  return cat;
 }
 
 /** -------------------- UI Components -------------------- */
@@ -564,7 +589,7 @@ function TextBtn({
 }
 
 /**
- * ✅ Field that scrolls itself above the keyboard using ScrollView's native helper
+ * Field that scrolls itself above the keyboard using ScrollView's native helper
  */
 function Field({
   label,
@@ -614,7 +639,7 @@ function Field({
 
 /** -------------------- App -------------------- */
 
-type Screen = "checklist" | "settings" | "history" | "history_detail";
+type Screen = "dashboard" | "settings" | "history" | "history_detail";
 
 export default function App() {
   return (
@@ -633,11 +658,15 @@ function migrateSettings(raw: any): Settings {
   if (!Array.isArray(s.bills)) s.bills = [];
   if (!Array.isArray(s.allocations)) s.allocations = [];
   if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
+  if (!Array.isArray(s.personalSpending)) s.personalSpending = [];
 
   // Back-compat: old single monthly fields -> monthlyItems list
   const oldLabel = raw?.monthlyLabel;
   const oldAmount = raw?.monthlyAmount;
-  if (s.monthlyItems.length === 0 && (typeof oldLabel === "string" || typeof oldAmount === "number")) {
+  if (
+    s.monthlyItems.length === 0 &&
+    (typeof oldLabel === "string" || typeof oldAmount === "number")
+  ) {
     const amt = typeof oldAmount === "number" ? oldAmount : 0;
     const lbl = typeof oldLabel === "string" ? oldLabel : "Monthly Expense";
     if ((amt || 0) > 0 || (lbl || "").trim().length > 0) {
@@ -675,6 +704,13 @@ function migrateSettings(raw: any): Settings {
     amount: Number(a.amount ?? 0) || 0,
   }));
 
+  // ✅ Ensure personal spending ok
+  s.personalSpending = (s.personalSpending || []).map((p: any) => ({
+    id: String(p.id ?? `ps_${Date.now()}`),
+    label: String(p.label ?? ""),
+    amount: Number(p.amount ?? 0) || 0,
+  }));
+
   return s as Settings;
 }
 
@@ -683,7 +719,7 @@ function migrateSettings(raw: any): Settings {
 function AppInner() {
   const insets = useSafeAreaInsets();
 
-  const [screen, setScreen] = useState<Screen>("checklist");
+  const [screen, setScreen] = useState<Screen>("dashboard");
   const [loaded, setLoaded] = useState(false);
 
   const [hasCompletedSetup, setHasCompletedSetup] = useState(false);
@@ -695,24 +731,24 @@ function AppInner() {
     {}
   );
 
-  // ✅ cycle navigation on checklist
+  // cycle navigation on dashboard
   const [cycleOffset, setCycleOffset] = useState(0);
 
-  // Checklist ScrollView ref (keyboard scrolling)
-  const checklistScrollRef = useRef<ScrollView>(null);
+  // Dashboard ScrollView ref (keyboard scrolling)
+  const dashboardScrollRef = useRef<ScrollView>(null);
 
-  const scrollChecklistToInput = (inputRef: React.RefObject<TextInput>) => {
+  const scrollDashboardToInput = (inputRef: React.RefObject<TextInput>) => {
     requestAnimationFrame(() => {
       const node = findNodeHandle(inputRef.current);
-      const responder: any = checklistScrollRef.current?.getScrollResponder?.();
+      const responder: any = dashboardScrollRef.current?.getScrollResponder?.();
       if (!node || !responder?.scrollResponderScrollNativeHandleToKeyboard) return;
       responder.scrollResponderScrollNativeHandleToKeyboard(node, 110, true);
     });
   };
 
-  const scrollChecklistToEnd = () => {
+  const scrollDashboardToEnd = () => {
     requestAnimationFrame(() => {
-      checklistScrollRef.current?.scrollToEnd({ animated: true });
+      dashboardScrollRef.current?.scrollToEnd({ animated: true });
     });
   };
 
@@ -744,6 +780,10 @@ function AppInner() {
   );
 
   const grouped = useMemo(() => groupByCategory(items), [items]);
+
+  const personalSpendingTotal = useMemo(() => {
+    return (settings.personalSpending || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+  }, [settings.personalSpending]);
 
   const totals = useMemo(() => {
     const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
@@ -885,7 +925,7 @@ function AppInner() {
           setHasCompletedSetup(false);
           setHistorySelectedCycleId(null);
           setCycleOffset(0);
-          setScreen("checklist");
+          setScreen("dashboard");
           try {
             await AsyncStorage.removeItem(STORAGE_KEY);
           } catch {}
@@ -965,7 +1005,7 @@ function AppInner() {
                 onBack={() => {}}
                 onFinishSetup={() => {
                   setHasCompletedSetup(true);
-                  setScreen("checklist");
+                  setScreen("dashboard");
                   setCycleOffset(0);
                 }}
               />
@@ -999,16 +1039,16 @@ function AppInner() {
             backgroundColor: COLORS.bg,
           }}
         >
-          {/* ✅ Top nav (centered, no app name) */}
+          {/* Top nav (centered, no app name) */}
           <View style={{ paddingTop: Math.max(0, insets.top), alignItems: "center" }}>
             <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
               <TextBtn
-                label="Checklist"
+                label="Dashboard"
                 onPress={() => {
                   setHistorySelectedCycleId(null);
-                  setScreen("checklist");
+                  setScreen("dashboard");
                 }}
-                kind={screen === "checklist" ? "green" : "default"}
+                kind={screen === "dashboard" ? "green" : "default"}
               />
               <TextBtn
                 label="History"
@@ -1030,25 +1070,25 @@ function AppInner() {
           </View>
 
           <ScrollView
-            ref={checklistScrollRef}
+            ref={dashboardScrollRef}
             style={{ marginTop: 12 }}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom: 260, paddingTop: 2 }}
             showsVerticalScrollIndicator={false}
           >
-            {screen === "checklist" ? (
+            {screen === "dashboard" ? (
               <>
-                {/* ✅ Cycle navigation */}
+                {/* Cycle navigation */}
                 <Card>
                   <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                    <TextBtn
-                      label="Prev"
-                      onPress={() => setCycleOffset((o) => o - 1)}
-                      disabled={false}
-                    />
+                    <TextBtn label="Prev" onPress={() => setCycleOffset((o) => o - 1)} disabled={false} />
                     <View style={{ alignItems: "center", flex: 1 }}>
                       <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                        {cycleOffset === 0 ? "This paycheck" : cycleOffset > 0 ? `Next +${cycleOffset}` : `Prev ${cycleOffset}`}
+                        {cycleOffset === 0
+                          ? "This paycheck"
+                          : cycleOffset > 0
+                          ? `Next +${cycleOffset}`
+                          : `Prev ${cycleOffset}`}
                       </Text>
                       <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" }}>
                         {viewCycle.label} • Payday {formatDate(viewCycle.payday)}
@@ -1071,6 +1111,12 @@ function AppInner() {
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                         <Text style={{ color: COLORS.muted, ...TYPE.label }}>Pay amount</Text>
                         <Chip>{fmtMoney(settings.payAmount)}</Chip>
+                      </View>
+
+                      {/* ✅ NEW: Personal spending total right below Pay amount */}
+                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                        <Text style={{ color: COLORS.muted, ...TYPE.label }}>Personal spending (per pay)</Text>
+                        <Chip>{fmtMoney(personalSpendingTotal)}</Chip>
                       </View>
 
                       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
@@ -1107,16 +1153,14 @@ function AppInner() {
                   </Card>
                 </View>
 
-                {/* Checklist */}
+                {/* Dashboard checklist */}
                 <View style={{ marginTop: 12, gap: 12 }}>
                   {grouped.map(([cat, catItems]) => {
                     const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
                     return (
                       <Card key={cat}>
                         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
-                            {displayCategory(cat)}
-                          </Text>
+                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{displayCategory(cat)}</Text>
                           <Chip>{fmtMoney(plannedForCat)} planned</Chip>
                         </View>
 
@@ -1170,7 +1214,7 @@ function AppInner() {
                       onPress={() => {
                         const next = !unexpectedOpen;
                         setUnexpectedOpen(next);
-                        if (next) scrollChecklistToEnd();
+                        if (next) scrollDashboardToEnd();
                       }}
                       style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}
                     >
@@ -1200,7 +1244,7 @@ function AppInner() {
                           value={uxLabel}
                           onChangeText={setUxLabel}
                           placeholder="Car repair"
-                          onFocusScrollToInput={scrollChecklistToInput}
+                          onFocusScrollToInput={scrollDashboardToInput}
                         />
 
                         <Field
@@ -1209,7 +1253,7 @@ function AppInner() {
                           onChangeText={setUxAmount}
                           keyboardType="numeric"
                           placeholder="0"
-                          onFocusScrollToInput={scrollChecklistToInput}
+                          onFocusScrollToInput={scrollDashboardToInput}
                         />
 
                         <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -1245,9 +1289,7 @@ function AppInner() {
                                     }}
                                   >
                                     <View style={{ flex: 1 }}>
-                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                        {x.label}
-                                      </Text>
+                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
                                       <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
                                         {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
                                       </Text>
@@ -1288,10 +1330,7 @@ function AppInner() {
                     const checked = getCycleChecked(c.id);
 
                     const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-                    const done = its.reduce(
-                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
-                      0
-                    );
+                    const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
                     const totalCount = its.length;
                     const doneCount = its.filter((i) => checked[i.id]?.checked).length;
                     const pct = totalCount ? Math.round((doneCount / totalCount) * 100) : 0;
@@ -1320,9 +1359,7 @@ function AppInner() {
                             <View style={{ alignItems: "flex-end" }}>
                               <Text
                                 style={{
-                                  color: metGoal
-                                    ? "rgba(34,197,94,0.95)"
-                                    : "rgba(251,191,36,0.95)",
+                                  color: metGoal ? "rgba(34,197,94,0.95)" : "rgba(251,191,36,0.95)",
                                   fontWeight: "900",
                                 }}
                               >
@@ -1385,10 +1422,7 @@ function AppInner() {
                     const checked = getCycleChecked(c.id);
 
                     const planned = its.reduce((sum, i) => sum + (i.amount || 0), 0);
-                    const done = its.reduce(
-                      (sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum),
-                      0
-                    );
+                    const done = its.reduce((sum, i) => (checked[i.id]?.checked ? sum + (i.amount || 0) : sum), 0);
 
                     const totalCount = its.length;
                     const doneCount = its.filter((i) => checked[i.id]?.checked).length;
@@ -1451,11 +1485,11 @@ function AppInner() {
                               }}
                             />
                             <TextBtn
-                              label="Checklist"
+                              label="Dashboard"
                               onPress={() => {
                                 setHistorySelectedCycleId(null);
                                 setCycleOffset(0);
-                                setScreen("checklist");
+                                setScreen("dashboard");
                               }}
                               kind="green"
                             />
@@ -1472,9 +1506,7 @@ function AppInner() {
                             <Divider />
 
                             {uxArr.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                                None recorded for this cycle.
-                              </Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None recorded for this cycle.</Text>
                             ) : (
                               <View style={{ gap: 10 }}>
                                 {uxArr.map((x) => (
@@ -1529,9 +1561,7 @@ function AppInner() {
                                             backgroundColor: COLORS.greenSoft,
                                           }}
                                         >
-                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                            ✅ {b.label}
-                                          </Text>
+                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>✅ {b.label}</Text>
                                           <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
                                             {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
                                           </Text>
@@ -1557,9 +1587,7 @@ function AppInner() {
                                             backgroundColor: COLORS.amberSoft,
                                           }}
                                         >
-                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                            ⬜ {b.label}
-                                          </Text>
+                                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>⬜ {b.label}</Text>
                                           <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
                                             {fmtMoney(b.amount)}{b.notes ? ` • ${b.notes}` : ""}
                                           </Text>
@@ -1583,9 +1611,7 @@ function AppInner() {
                             <Divider />
 
                             {missedItems.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                                None — you completed everything ✅
-                              </Text>
+                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None — you completed everything ✅</Text>
                             ) : (
                               <View style={{ gap: 10 }}>
                                 {missedItems.map((i) => (
@@ -1599,9 +1625,7 @@ function AppInner() {
                                       backgroundColor: COLORS.amberSoft,
                                     }}
                                   >
-                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                      ⬜ {i.label}
-                                    </Text>
+                                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>⬜ {i.label}</Text>
                                     <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
                                       {fmtMoney(i.amount)} • {displayCategory(i.category)}
                                       {i.notes ? ` • ${i.notes}` : ""}
@@ -1636,7 +1660,7 @@ function AppInner() {
                 mode="normal"
                 settings={settings}
                 onChange={(s) => setSettings(s)}
-                onBack={() => setScreen("checklist")}
+                onBack={() => setScreen("dashboard")}
                 onFinishSetup={() => {}}
               />
             )}
@@ -1668,7 +1692,7 @@ function SettingsScreen({
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
   const [anchorError, setAnchorError] = useState(false);
 
-  // ✅ Fix "can't delete 1" for dueDay by keeping due text separately until save
+  // Fix "can't delete 1" for dueDay by keeping due text separately until save
   const [billDueText, setBillDueText] = useState<Record<string, string>>({});
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
 
@@ -1695,14 +1719,14 @@ function SettingsScreen({
   };
 
   function save() {
-    // Force anchor selection in setup for weekly/biweekly
+    // Force payday selection in setup for weekly/biweekly
     if (
       (local.payFrequency === "weekly" || local.payFrequency === "biweekly") &&
       !hasValidAnchorDate(local.anchorISO)
     ) {
       if (mode === "setup") {
         setAnchorError(true);
-        Alert.alert("Select a payday", "Please choose your first payday to finish setup.");
+        Alert.alert("Select a payday", "Please choose your payday to finish setup.");
         return;
       }
     }
@@ -1799,6 +1823,29 @@ function SettingsScreen({
     }));
   }
 
+  // ✅ Personal Spending (works like distributions)
+  function addPersonalSpending() {
+    const id = `ps_${Date.now()}`;
+    setLocal((s) => ({
+      ...s,
+      personalSpending: [...(s.personalSpending || []), { id, label: "", amount: 0 }],
+    }));
+  }
+
+  function updatePersonalSpending(id: string, patch: Partial<PersonalSpendingItem>) {
+    setLocal((s) => ({
+      ...s,
+      personalSpending: (s.personalSpending || []).map((p) => (p.id === id ? { ...p, ...patch } : p)),
+    }));
+  }
+
+  function removePersonalSpending(id: string) {
+    setLocal((s) => ({
+      ...s,
+      personalSpending: (s.personalSpending || []).filter((p) => p.id !== id),
+    }));
+  }
+
   // Monthly items
   function addMonthlyItem() {
     const id = `monthly_${Date.now()}`;
@@ -1880,7 +1927,8 @@ function SettingsScreen({
 
           {shouldShowAnchor ? (
             <>
-              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Anchor payday</Text>
+              {/* ✅ Renamed from Anchor Payday -> Payday */}
+              <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Payday</Text>
 
               <Pressable
                 onPress={() => setShowAnchorPicker(true)}
@@ -2030,6 +2078,55 @@ function SettingsScreen({
           </View>
         </Card>
 
+        {/* ✅ NEW: Personal Spending (like distributions) */}
+        <Card>
+          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Personal Spending</Text>
+          <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+            Personal “fun money” items that repeat every pay cycle.
+          </Text>
+
+          <Divider />
+
+          <View style={{ gap: 12 }}>
+            {(local.personalSpending || []).map((p) => (
+              <View
+                key={p.id}
+                style={{
+                  borderWidth: 1,
+                  borderColor: COLORS.borderSoft,
+                  borderRadius: 16,
+                  padding: 12,
+                  backgroundColor: "rgba(255,255,255,0.03)",
+                }}
+              >
+                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
+
+                <Field
+                  label="Name"
+                  value={p.label}
+                  onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
+                  placeholder="Dining out"
+                  onFocusScrollToInput={scrollSettingsToInput}
+                />
+                <Field
+                  label="Amount"
+                  value={String(p.amount)}
+                  onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
+                  keyboardType="numeric"
+                  placeholder="0"
+                  onFocusScrollToInput={scrollSettingsToInput}
+                />
+
+                <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                  <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
+                </View>
+              </View>
+            ))}
+
+            <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
+          </View>
+        </Card>
+
         {/* Monthly Expenses (multiple) */}
         <Card>
           <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
@@ -2070,7 +2167,7 @@ function SettingsScreen({
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
 
-                {/* ✅ due day text input (no forced clamp while typing) */}
+                {/* due day text input (no forced clamp while typing) */}
                 <Field
                   label="Due day (1–31)"
                   value={monthlyDueText[m.id] ?? String(m.dueDay ?? 1)}
@@ -2130,7 +2227,7 @@ function SettingsScreen({
                   onFocusScrollToInput={scrollSettingsToInput}
                 />
 
-                {/* ✅ due day text input (fixes "can't delete 1" / typing 20) */}
+                {/* due day text input (fixes typing) */}
                 <Field
                   label="Due day (1–31)"
                   value={billDueText[b.id] ?? String(b.dueDay ?? 1)}
@@ -2151,11 +2248,7 @@ function SettingsScreen({
         </Card>
 
         <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-          <TextBtn
-            label={mode === "setup" ? "Finish setup" : "Save settings"}
-            onPress={save}
-            kind="green"
-          />
+          <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
           {mode === "normal" ? <TextBtn label="Back" onPress={onBack} /> : null}
         </View>
 
