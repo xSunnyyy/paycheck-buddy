@@ -294,7 +294,6 @@ export default function SettingsScreen() {
     if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
       return Alert.alert("Invalid", "Monthly payday must be 1–28");
 
-    // ✅ Updates the single shared store (Dashboard updates immediately)
     setSettings(nextLocal);
 
     if (mode === "setup") {
@@ -358,7 +357,7 @@ export default function SettingsScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{
-              paddingBottom: 420 + keyboardHeight, // ✅ bigger buffer fixes Android
+              paddingBottom: 420 + keyboardHeight,
             }}
           >
             <View style={{ gap: 12 }}>
@@ -367,7 +366,9 @@ export default function SettingsScreen() {
                 <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
                   {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
                 </Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>Choose one of the 4 options.</Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                  Choose one of the 4 options.
+                </Text>
 
                 <Divider />
 
@@ -488,7 +489,6 @@ export default function SettingsScreen() {
                   keyboardType="numeric"
                   placeholder="0"
                   onFocusScrollToInput={scrollToInput}
-                  clearOnFocus
                 />
               </Card>
 
@@ -521,7 +521,6 @@ export default function SettingsScreen() {
                         onChangeText={(s) => updateDistribution(a.id, { label: s })}
                         placeholder="Savings"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
                       <Field
                         label="Amount"
@@ -530,7 +529,6 @@ export default function SettingsScreen() {
                         keyboardType="numeric"
                         placeholder="0"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
 
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -572,7 +570,6 @@ export default function SettingsScreen() {
                         onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
                         placeholder="Dining out"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
                       <Field
                         label="Amount"
@@ -581,7 +578,6 @@ export default function SettingsScreen() {
                         keyboardType="numeric"
                         placeholder="0"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
 
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -623,7 +619,6 @@ export default function SettingsScreen() {
                         onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
                         placeholder="Electricity"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
 
                       <Field
@@ -633,7 +628,6 @@ export default function SettingsScreen() {
                         keyboardType="numeric"
                         placeholder="0"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
 
                       <Field
@@ -643,7 +637,6 @@ export default function SettingsScreen() {
                         keyboardType="numeric"
                         placeholder="1"
                         onFocusScrollToInput={scrollToInput}
-                        clearOnFocus
                       />
 
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
@@ -692,7 +685,6 @@ export default function SettingsScreen() {
                           onChangeText={(s) => updateCard(c.id, { name: s })}
                           placeholder="Chase Freedom"
                           onFocusScrollToInput={scrollToInput}
-                          clearOnFocus
                         />
 
                         <Field
@@ -702,7 +694,6 @@ export default function SettingsScreen() {
                           keyboardType="numeric"
                           placeholder="0"
                           onFocusScrollToInput={scrollToInput}
-                          clearOnFocus
                         />
 
                         <Field
@@ -712,7 +703,6 @@ export default function SettingsScreen() {
                           keyboardType="numeric"
                           placeholder="0"
                           onFocusScrollToInput={scrollToInput}
-                          clearOnFocus
                         />
 
                         <Field
@@ -722,7 +712,6 @@ export default function SettingsScreen() {
                           keyboardType="numeric"
                           placeholder="0"
                           onFocusScrollToInput={scrollToInput}
-                          clearOnFocus
                         />
 
                         <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
@@ -777,17 +766,13 @@ export default function SettingsScreen() {
                 </View>
               </Card>
 
-              {/* ✅ Actions (Save + Reset on SAME LINE) */}
-              <View style={{ flexDirection: "row", gap: 10 }}>
+              {/* Actions */}
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
                 <View style={{ flex: 1 }}>
-                  <TextBtn
-                    label={mode === "setup" ? "Finish setup" : "Save settings"}
-                    onPress={save}
-                    kind="green"
-                  />
+                  <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <TextBtn label="Reset ALL" onPress={confirmResetAll} kind="red" />
+                  <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
                 </View>
               </View>
 
