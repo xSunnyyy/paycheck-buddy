@@ -3,8 +3,11 @@ import React, { useState } from "react";
 import { ScrollView, StatusBar, Text, View, Pressable } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+// ✅ shared live store
+import { usePayflow } from "@/src/state/PayFlowProvider";
+
+// ✅ helpers + types
 import {
-  usePayflow,
   fmtMoney,
   formatDate,
   type CardPayment,

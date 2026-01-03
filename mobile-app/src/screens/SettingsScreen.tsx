@@ -18,10 +18,10 @@ import { useRouter } from "expo-router";
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
-// ✅ IMPORTANT: use the Provider hook (single store instance)
-import { usePayflow } from "@/src/state/usePayflow";
+// ✅ IMPORTANT: use the Provider hook (single shared store instance)
+import { usePayflow } from "@/src/state/PayFlowProvider";
 
-// helpers + types still come from the store file
+// ✅ helpers + types still come from the store file
 import {
   safeParseNumber,
   type Settings,

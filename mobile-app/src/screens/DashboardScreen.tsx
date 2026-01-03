@@ -17,8 +17,11 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
+// ✅ usePayflow comes from Provider (shared state across screens)
+import { usePayflow } from "@/src/state/PayFlowProvider";
+
+// ✅ helpers + types stay from usePayflow.ts
 import {
-  usePayflow,
   fmtMoney,
   formatDate,
   displayCategory,
