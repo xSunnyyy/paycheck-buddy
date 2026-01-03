@@ -1,22 +1,14 @@
 // src/state/PayFlowProvider.tsx
-import React, { createContext, useContext, useMemo } from "react";
-
-// IMPORTANT:
-// This Provider should NOT persist anything itself.
-// The real store + persistence lives in src/state/usePayflow.ts.
+import React, { createContext, useContext } from "react";
 import { usePayflow as usePayflowStore } from "@/src/state/usePayflow";
 
-type PayFlowContextValue = ReturnType<typeof usePayflowStore>;
+// The provider holds ONE instance of the payflow store for the whole app.
+type PayflowValue = ReturnType<typeof usePayflowStore>;
 
-const Ctx = createContext<PayFlowContextValue | null>(null);
+const Ctx = createContext<PayflowValue | null>(null);
 
 export function PayFlowProvider({ children }: { children: React.ReactNode }) {
-  // ✅ single source of truth store instance
-  const store = usePayflowStore();
-
-  // memo not strictly required, but avoids needless rerenders
-  const value = useMemo(() => store, [store]);
-
+  const value = usePayflowStore();
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

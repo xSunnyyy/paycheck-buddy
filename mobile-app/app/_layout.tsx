@@ -3,16 +3,14 @@ import React, { useEffect, useRef } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 
-import { usePayflow } from "@/src/state/usePayflow";
+import { PayFlowProvider, usePayflow } from "@/src/state/PayFlowProvider";
 import { COLORS } from "@/src/ui/common";
 
 function Gate() {
   const router = useRouter();
   const segments = useSegments();
-
   const { loaded, hasCompletedSetup } = usePayflow();
 
-  // prevent repeated replace() calls for the same state/location combo
   const lastRouteKeyRef = useRef<string>("");
 
   useEffect(() => {
@@ -22,31 +20,24 @@ function Gate() {
     const inTabs = top === "(tabs)";
     const inSettings = top === "settings";
 
-    // Build a key that represents "what we are" + "where we are"
     const key = `${hasCompletedSetup ? "done" : "setup"}:${top ?? "none"}`;
-
-    // If we already routed for this exact combo, don't spam replace()
     if (lastRouteKeyRef.current === key) return;
 
-    // If setup is NOT complete, force user into /settings
     if (!hasCompletedSetup && !inSettings) {
       lastRouteKeyRef.current = key;
       router.replace("/settings");
       return;
     }
 
-    // If setup IS complete, force user into /(tabs)
     if (hasCompletedSetup && !inTabs) {
       lastRouteKeyRef.current = key;
       router.replace("/(tabs)");
       return;
     }
 
-    // We're already in the right place
     lastRouteKeyRef.current = key;
   }, [loaded, hasCompletedSetup, segments, router]);
 
-  // Loader overlay while AsyncStorage loads
   if (!loaded) {
     return (
       <View
@@ -72,7 +63,7 @@ function Gate() {
 
 export default function RootLayout() {
   return (
-    <>
+    <PayFlowProvider>
       <Gate />
 
       <Stack screenOptions={{ headerShown: false }}>
@@ -80,6 +71,6 @@ export default function RootLayout() {
         <Stack.Screen name="settings" />
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
-    </>
+    </PayFlowProvider>
   );
 }
