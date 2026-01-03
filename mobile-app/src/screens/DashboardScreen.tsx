@@ -17,11 +17,13 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 
-// ✅ IMPORTANT: use the Provider hook (single store instance)
-import { usePayflow } from "@/src/state/PayFlowProvider";
-
-// helpers + types still come from the store file
-import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
+import {
+  usePayflow,
+  fmtMoney,
+  formatDate,
+  displayCategory,
+  type CreditCard,
+} from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
@@ -220,6 +222,9 @@ export default function DashboardScreen() {
   // collapsed by default (payments)
   const [paymentsCollapsed, setPaymentsCollapsed] = useState(true);
 
+  // ✅ NEW: collapsed by default (summary)
+  const [summaryCollapsed, setSummaryCollapsed] = useState(true);
+
   const payableCards: CreditCard[] = useMemo(
     () => (settings.creditCards || []).filter((c) => (c.balance || 0) > 0),
     [settings.creditCards]
@@ -327,26 +332,43 @@ export default function DashboardScreen() {
               </View>
             </Card>
 
-            {/* Summary */}
+            {/* ✅ Summary (collapsible) */}
             <View style={{ marginTop: 12 }}>
               <Card>
-                <View style={{ gap: 10 }}>
-                  <Row label="Pay amount" value={fmtMoney(settings.payAmount)} />
-                  <Row label="Credit Card Debt" value={fmtMoney(creditCardDebtTotal)} />
-                  <Row label="Personal spending (per pay)" value={fmtMoney(personalSpendingTotal)} />
-                  <Row label="Debt remaining (other)" value={fmtMoney(settings.debtRemaining)} />
-                  <Row label="Manual card payments (this cycle)" value={fmtMoney(manualPaymentsTotal)} />
-                  <Row label="Unexpected (this cycle)" value={fmtMoney(unexpectedTotal)} />
-                  <Row label="Planned" value={fmtMoney(totals.planned)} />
-                  <Row label="Completed" value={fmtMoney(totals.done)} />
-
-                  <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                    Progress:{" "}
-                    <Text style={{ color: COLORS.textStrong }}>
-                      {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
-                    </Text>
-                  </Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Summary</Text>
+                  <TextBtn
+                    label={summaryCollapsed ? "Show" : "Hide"}
+                    onPress={() => setSummaryCollapsed((v) => !v)}
+                  />
                 </View>
+
+                <Divider />
+
+                {/* Always visible */}
+                <Text style={{ color: COLORS.muted, ...TYPE.body }}>
+                  Progress:{" "}
+                  <Text style={{ color: COLORS.textStrong }}>
+                    {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
+                  </Text>
+                </Text>
+
+                {/* Expanded content */}
+                {summaryCollapsed ? null : (
+                  <>
+                    <Divider />
+                    <View style={{ gap: 10 }}>
+                      <Row label="Pay amount" value={fmtMoney(settings.payAmount)} />
+                      <Row label="Credit Card Debt" value={fmtMoney(creditCardDebtTotal)} />
+                      <Row label="Personal spending (per pay)" value={fmtMoney(personalSpendingTotal)} />
+                      <Row label="Debt remaining (other)" value={fmtMoney(settings.debtRemaining)} />
+                      <Row label="Manual card payments (this cycle)" value={fmtMoney(manualPaymentsTotal)} />
+                      <Row label="Unexpected (this cycle)" value={fmtMoney(unexpectedTotal)} />
+                      <Row label="Planned" value={fmtMoney(totals.planned)} />
+                      <Row label="Completed" value={fmtMoney(totals.done)} />
+                    </View>
+                  </>
+                )}
               </Card>
             </View>
 
@@ -548,6 +570,7 @@ export default function DashboardScreen() {
                     <Divider />
                     <View style={{ gap: 10 }}>
                       {unexpected.map((x) => {
+                        // @ts-ignore (x.cardId exists once you updated the type)
                         const cardName = x.cardId
                           ? (settings.creditCards || []).find((c) => c.id === x.cardId)?.name
                           : null;
@@ -573,7 +596,11 @@ export default function DashboardScreen() {
                               </View>
                               <View style={{ alignItems: "flex-end", gap: 8 }}>
                                 <Chip>{fmtMoney(x.amount)}</Chip>
-                                <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
+                                <TextBtn
+                                  label="Remove"
+                                  kind="red"
+                                  onPress={() => removeUnexpected(viewCycle.id, x.id)}
+                                />
                               </View>
                             </View>
                           </View>
@@ -673,6 +700,8 @@ export default function DashboardScreen() {
                 kind="green"
                 disabled={Number(uxAmount) <= 0}
                 onPress={() => {
+                  // If your usePayflow addUnexpected supports cardId, pass it here.
+                  // @ts-ignore
                   const ok = addUnexpected(uxLabel, uxAmount, uxCardId || undefined);
                   if (!ok) return;
                   setUxLabel("");
