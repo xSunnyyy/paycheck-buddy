@@ -6,59 +6,66 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { usePayflow } from "@/src/state/usePayflow";
 import { COLORS } from "@/src/ui/common";
 
-/**
- * Gate: routes based on setup completion.
- * IMPORTANT:
- * - No provider here (single source of truth is usePayflow.ts)
- * - Never navigate during render; only inside useEffect
- */
 function Gate() {
   const router = useRouter();
   const segments = useSegments();
-  const hasRoutedRef = useRef(false);
 
   const { loaded, hasCompletedSetup } = usePayflow();
 
-  // show a simple loader while AsyncStorage loads
+  // prevent repeated replace() calls for the same state/location combo
+  const lastRouteKeyRef = useRef<string>("");
+
+  useEffect(() => {
+    if (!loaded) return;
+
+    const top = segments[0]; // "(tabs)" | "settings" | undefined
+    const inTabs = top === "(tabs)";
+    const inSettings = top === "settings";
+
+    // Build a key that represents "what we are" + "where we are"
+    const key = `${hasCompletedSetup ? "done" : "setup"}:${top ?? "none"}`;
+
+    // If we already routed for this exact combo, don't spam replace()
+    if (lastRouteKeyRef.current === key) return;
+
+    // If setup is NOT complete, force user into /settings
+    if (!hasCompletedSetup && !inSettings) {
+      lastRouteKeyRef.current = key;
+      router.replace("/settings");
+      return;
+    }
+
+    // If setup IS complete, force user into /(tabs)
+    if (hasCompletedSetup && !inTabs) {
+      lastRouteKeyRef.current = key;
+      router.replace("/(tabs)");
+      return;
+    }
+
+    // We're already in the right place
+    lastRouteKeyRef.current = key;
+  }, [loaded, hasCompletedSetup, segments, router]);
+
+  // Loader overlay while AsyncStorage loads
   if (!loaded) {
     return (
       <View
         style={{
-          flex: 1,
+          position: "absolute",
+          left: 0,
+          right: 0,
+          top: 0,
+          bottom: 0,
           backgroundColor: COLORS.bg,
           alignItems: "center",
           justifyContent: "center",
+          zIndex: 999,
         }}
       >
         <ActivityIndicator />
       </View>
     );
   }
-
-  useEffect(() => {
-    // Prevent double-routing loops (especially on Android release builds)
-    if (hasRoutedRef.current) return;
-
-    const top = segments[0]; // "(tabs)" | "settings" | undefined
-    const inTabs = top === "(tabs)";
-    const inSettings = top === "settings";
-
-    // If setup NOT done, always go to /settings
-    if (!hasCompletedSetup && !inSettings) {
-      hasRoutedRef.current = true;
-      router.replace("/settings");
-      return;
-    }
-
-    // If setup IS done, always go to /(tabs)
-    if (hasCompletedSetup && !inTabs) {
-      hasRoutedRef.current = true;
-      router.replace("/(tabs)");
-      return;
-    }
-
-    // If already in the correct place, do nothing
-  }, [loaded, hasCompletedSetup, segments, router]);
 
   return null;
 }
@@ -71,7 +78,6 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="settings" />
-        {/* Optional modal support */}
         <Stack.Screen name="modal" options={{ presentation: "modal" }} />
       </Stack>
     </>
