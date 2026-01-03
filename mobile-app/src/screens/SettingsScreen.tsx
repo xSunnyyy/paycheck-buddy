@@ -305,8 +305,6 @@ export default function SettingsScreen() {
       Alert.alert("Saved", "Setup complete. You can now use Dashboard + History.");
     } else {
       Alert.alert("Saved", "Settings saved to device.");
-      // Optional: bounce back to dashboard automatically
-      // requestAnimationFrame(() => router.replace("/(tabs)/index"));
     }
   }
 
@@ -369,9 +367,7 @@ export default function SettingsScreen() {
                 <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
                   {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
                 </Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Choose one of the 4 options.
-                </Text>
+                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>Choose one of the 4 options.</Text>
 
                 <Divider />
 
@@ -414,9 +410,7 @@ export default function SettingsScreen() {
                       <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
                         {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                       </Text>
-                      <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                        Tap to pick a date
-                      </Text>
+                      <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>Tap to pick a date</Text>
                     </Pressable>
 
                     {showAnchorPicker ? (
@@ -470,9 +464,7 @@ export default function SettingsScreen() {
                   <Field
                     label="Monthly payday (1–28)"
                     value={String(local.monthlyPayDay)}
-                    onChangeText={(s) =>
-                      setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))
-                    }
+                    onChangeText={(s) => setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))}
                     keyboardType="numeric"
                     placeholder="1"
                     onFocusScrollToInput={scrollToInput}
@@ -785,13 +777,18 @@ export default function SettingsScreen() {
                 </View>
               </Card>
 
-              {/* Actions */}
-              <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
-              </View>
-
-              <View style={{ marginTop: 12 }}>
-                <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
+              {/* ✅ Actions (Save + Reset on SAME LINE) */}
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <TextBtn
+                    label={mode === "setup" ? "Finish setup" : "Save settings"}
+                    onPress={save}
+                    kind="green"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <TextBtn label="Reset ALL" onPress={confirmResetAll} kind="red" />
+                </View>
               </View>
 
               <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
