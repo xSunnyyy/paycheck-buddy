@@ -11,6 +11,8 @@ import {
   TextInput,
   View,
   findNodeHandle,
+  LayoutAnimation,
+  UIManager,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -65,6 +67,43 @@ function formatDate(d: Date) {
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
 
+/* ---------------- collapsible section ---------------- */
+
+if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+function SectionHeader({
+  title,
+  open,
+  onToggle,
+}: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={() => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        onToggle();
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingVertical: 10,
+      }}
+      hitSlop={10}
+    >
+      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{title}</Text>
+      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 18 }}>
+        {open ? "▾" : "▸"}
+      </Text>
+    </Pressable>
+  );
+}
+
 /* ---------------- screen ---------------- */
 
 export default function SettingsScreen() {
@@ -99,6 +138,32 @@ export default function SettingsScreen() {
 
   // Calendar picker open card id
   const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
+
+  // ✅ Collapsed by default (as requested)
+  const [openTotals, setOpenTotals] = useState(false);
+  const [openDistributions, setOpenDistributions] = useState(false);
+  const [openPersonalSpending, setOpenPersonalSpending] = useState(false);
+  const [openMonthlyExpenses, setOpenMonthlyExpenses] = useState(false);
+  const [openCreditCards, setOpenCreditCards] = useState(false);
+
+  // ✅ Expand all / Collapse all
+  const expandAll = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setOpenTotals(true);
+    setOpenDistributions(true);
+    setOpenPersonalSpending(true);
+    setOpenMonthlyExpenses(true);
+    setOpenCreditCards(true);
+  };
+
+  const collapseAll = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setOpenTotals(false);
+    setOpenDistributions(false);
+    setOpenPersonalSpending(false);
+    setOpenMonthlyExpenses(false);
+    setOpenCreditCards(false);
+  };
 
   useEffect(() => {
     setLocal(settings);
@@ -473,297 +538,348 @@ export default function SettingsScreen() {
                 ) : null}
               </Card>
 
+              {/* ✅ Expand / Collapse All (only affects the collapsible sections below) */}
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 2 }}>
+                <View style={{ flex: 1 }}>
+                  <TextBtn label="Expand all" onPress={expandAll} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <TextBtn label="Collapse all" onPress={collapseAll} />
+                </View>
+              </View>
+
               {/* Totals */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Totals</Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  One total debt, auto-decreases when you check Debt Paydown.
-                </Text>
+                <SectionHeader title="Totals" open={openTotals} onToggle={() => setOpenTotals((v) => !v)} />
 
-                <Divider />
+                {openTotals ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      One total debt, auto-decreases when you check Debt Paydown.
+                    </Text>
 
-                <Field
-                  label="Debt remaining"
-                  value={String(local.debtRemaining)}
-                  onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
-                  keyboardType="numeric"
-                  placeholder="0"
-                  onFocusScrollToInput={scrollToInput}
-                />
+                    <Divider />
+
+                    <Field
+                      label="Debt remaining"
+                      value={String(local.debtRemaining)}
+                      onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
+                      keyboardType="numeric"
+                      placeholder="0"
+                      onFocusScrollToInput={scrollToInput}
+                    />
+                  </>
+                ) : null}
               </Card>
 
               {/* Paycheck Distributions */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Paycheck Distributions</Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Items that repeat every pay cycle (e.g., Savings, Investing).
-                </Text>
+                <SectionHeader
+                  title="Paycheck Distributions"
+                  open={openDistributions}
+                  onToggle={() => setOpenDistributions((v) => !v)}
+                />
 
-                <Divider />
+                {openDistributions ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      Items that repeat every pay cycle (e.g., Savings, Investing).
+                    </Text>
 
-                <View style={{ gap: 12 }}>
-                  {(local.allocations || []).map((a) => (
-                    <View
-                      key={a.id}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: COLORS.borderSoft,
-                        borderRadius: 16,
-                        padding: 12,
-                        backgroundColor: "rgba(255,255,255,0.03)",
-                      }}
-                    >
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
+                    <Divider />
 
-                      <Field
-                        label="Name"
-                        value={a.label}
-                        onChangeText={(s) => updateDistribution(a.id, { label: s })}
-                        placeholder="Savings"
-                        onFocusScrollToInput={scrollToInput}
-                      />
-                      <Field
-                        label="Amount"
-                        value={String(a.amount)}
-                        onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        onFocusScrollToInput={scrollToInput}
-                      />
+                    <View style={{ gap: 12 }}>
+                      {(local.allocations || []).map((a) => (
+                        <View
+                          key={a.id}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: COLORS.borderSoft,
+                            borderRadius: 16,
+                            padding: 12,
+                            backgroundColor: "rgba(255,255,255,0.03)",
+                          }}
+                        >
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
 
-                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                        <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
-                      </View>
+                          <Field
+                            label="Name"
+                            value={a.label}
+                            onChangeText={(s) => updateDistribution(a.id, { label: s })}
+                            placeholder="Savings"
+                            onFocusScrollToInput={scrollToInput}
+                          />
+                          <Field
+                            label="Amount"
+                            value={String(a.amount)}
+                            onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            onFocusScrollToInput={scrollToInput}
+                          />
+
+                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                            <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
+                          </View>
+                        </View>
+                      ))}
+
+                      <TextBtn label="Add distribution" onPress={addDistribution} />
                     </View>
-                  ))}
-
-                  <TextBtn label="Add distribution" onPress={addDistribution} />
-                </View>
+                  </>
+                ) : null}
               </Card>
 
               {/* Personal Spending */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Personal Spending</Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Personal “fun money” items that repeat every pay cycle.
-                </Text>
+                <SectionHeader
+                  title="Personal Spending"
+                  open={openPersonalSpending}
+                  onToggle={() => setOpenPersonalSpending((v) => !v)}
+                />
 
-                <Divider />
+                {openPersonalSpending ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      Personal “fun money” items that repeat every pay cycle.
+                    </Text>
 
-                <View style={{ gap: 12 }}>
-                  {(local.personalSpending || []).map((p) => (
-                    <View
-                      key={p.id}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: COLORS.borderSoft,
-                        borderRadius: 16,
-                        padding: 12,
-                        backgroundColor: "rgba(255,255,255,0.03)",
-                      }}
-                    >
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
+                    <Divider />
 
-                      <Field
-                        label="Name"
-                        value={p.label}
-                        onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
-                        placeholder="Dining out"
-                        onFocusScrollToInput={scrollToInput}
-                      />
-                      <Field
-                        label="Amount"
-                        value={String(p.amount)}
-                        onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        onFocusScrollToInput={scrollToInput}
-                      />
+                    <View style={{ gap: 12 }}>
+                      {(local.personalSpending || []).map((p) => (
+                        <View
+                          key={p.id}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: COLORS.borderSoft,
+                            borderRadius: 16,
+                            padding: 12,
+                            backgroundColor: "rgba(255,255,255,0.03)",
+                          }}
+                        >
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
 
-                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                        <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
-                      </View>
+                          <Field
+                            label="Name"
+                            value={p.label}
+                            onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
+                            placeholder="Dining out"
+                            onFocusScrollToInput={scrollToInput}
+                          />
+                          <Field
+                            label="Amount"
+                            value={String(p.amount)}
+                            onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            onFocusScrollToInput={scrollToInput}
+                          />
+
+                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                            <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
+                          </View>
+                        </View>
+                      ))}
+
+                      <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
                     </View>
-                  ))}
-
-                  <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
-                </View>
+                  </>
+                ) : null}
               </Card>
 
               {/* Monthly Expenses */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Monthly Expenses</Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
-                </Text>
+                <SectionHeader
+                  title="Monthly Expenses"
+                  open={openMonthlyExpenses}
+                  onToggle={() => setOpenMonthlyExpenses((v) => !v)}
+                />
 
-                <Divider />
+                {openMonthlyExpenses ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
+                    </Text>
 
-                <View style={{ gap: 12 }}>
-                  {(local.monthlyItems || []).map((m) => (
-                    <View
-                      key={m.id}
-                      style={{
-                        borderWidth: 1,
-                        borderColor: COLORS.borderSoft,
-                        borderRadius: 16,
-                        padding: 12,
-                        backgroundColor: "rgba(255,255,255,0.03)",
-                      }}
-                    >
-                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
+                    <Divider />
 
-                      <Field
-                        label="Name"
-                        value={m.label}
-                        onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                        placeholder="Electricity"
-                        onFocusScrollToInput={scrollToInput}
-                      />
+                    <View style={{ gap: 12 }}>
+                      {(local.monthlyItems || []).map((m) => (
+                        <View
+                          key={m.id}
+                          style={{
+                            borderWidth: 1,
+                            borderColor: COLORS.borderSoft,
+                            borderRadius: 16,
+                            padding: 12,
+                            backgroundColor: "rgba(255,255,255,0.03)",
+                          }}
+                        >
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
 
-                      <Field
-                        label="Amount"
-                        value={String(m.amount)}
-                        onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
-                        keyboardType="numeric"
-                        placeholder="0"
-                        onFocusScrollToInput={scrollToInput}
-                      />
+                          <Field
+                            label="Name"
+                            value={m.label}
+                            onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
+                            placeholder="Electricity"
+                            onFocusScrollToInput={scrollToInput}
+                          />
 
-                      <Field
-                        label="Due day (1–31)"
-                        value={monthlyDueText[m.id] ?? ""}
-                        onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
-                        keyboardType="numeric"
-                        placeholder="1"
-                        onFocusScrollToInput={scrollToInput}
-                      />
+                          <Field
+                            label="Amount"
+                            value={String(m.amount)}
+                            onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            onFocusScrollToInput={scrollToInput}
+                          />
 
-                      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                        <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
-                      </View>
+                          <Field
+                            label="Due day (1–31)"
+                            value={monthlyDueText[m.id] ?? ""}
+                            onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
+                            keyboardType="numeric"
+                            placeholder="1"
+                            onFocusScrollToInput={scrollToInput}
+                          />
+
+                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                            <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
+                          </View>
+                        </View>
+                      ))}
+
+                      <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
                     </View>
-                  ))}
-
-                  <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
-                </View>
+                  </>
+                ) : null}
               </Card>
 
               {/* Credit Cards */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Cards</Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Enter each card’s balance (debt remaining), minimum due, and due date. Paid-off cards (balance 0) will
-                  be hidden from the Dashboard.
-                </Text>
+                <SectionHeader
+                  title="Credit Cards"
+                  open={openCreditCards}
+                  onToggle={() => setOpenCreditCards((v) => !v)}
+                />
 
-                <Divider />
+                {openCreditCards ? (
+                  <>
+                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                      Enter each card’s balance (debt remaining), minimum due, and due date. Paid-off cards (balance 0) will
+                      be hidden from the Dashboard.
+                    </Text>
 
-                <View style={{ gap: 12 }}>
-                  {(local.creditCards || []).map((c) => {
-                    const dueText = cardDueText[c.id] ?? "";
-                    const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
+                    <Divider />
 
-                    const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
+                    <View style={{ gap: 12 }}>
+                      {(local.creditCards || []).map((c) => {
+                        const dueText = cardDueText[c.id] ?? "";
+                        const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
 
-                    return (
-                      <View
-                        key={c.id}
-                        style={{
-                          borderWidth: 1,
-                          borderColor: COLORS.borderSoft,
-                          borderRadius: 16,
-                          padding: 12,
-                          backgroundColor: "rgba(255,255,255,0.03)",
-                        }}
-                      >
-                        <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
+                        const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
 
-                        <Field
-                          label="Name"
-                          value={c.name}
-                          onChangeText={(s) => updateCard(c.id, { name: s })}
-                          placeholder="Chase Freedom"
-                          onFocusScrollToInput={scrollToInput}
-                        />
-
-                        <Field
-                          label="Balance (debt remaining)"
-                          value={balText}
-                          onChangeText={(s) => setCardBalanceText((map) => ({ ...map, [c.id]: keepMoneyChars(s) }))}
-                          keyboardType="numeric"
-                          placeholder="0"
-                          onFocusScrollToInput={scrollToInput}
-                        />
-
-                        <Field
-                          label="Total Amount Due (statement)"
-                          value={String(c.totalDue)}
-                          onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
-                          keyboardType="numeric"
-                          placeholder="0"
-                          onFocusScrollToInput={scrollToInput}
-                        />
-
-                        <Field
-                          label="Minimum Due"
-                          value={String(c.minDue)}
-                          onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
-                          keyboardType="numeric"
-                          placeholder="0"
-                          onFocusScrollToInput={scrollToInput}
-                        />
-
-                        <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
-
-                        <Pressable
-                          onPress={() => setOpenCardPickerId(c.id)}
-                          style={{
-                            marginTop: 6,
-                            borderWidth: 1,
-                            borderColor: COLORS.border,
-                            borderRadius: 14,
-                            paddingVertical: 12,
-                            paddingHorizontal: 12,
-                            backgroundColor: "rgba(255,255,255,0.05)",
-                          }}
-                        >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
-                          <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                            Tap to pick a date (we only store the day number)
-                          </Text>
-                        </Pressable>
-
-                        {openCardPickerId === c.id ? (
-                          <DateTimePicker
-                            value={new Date()}
-                            mode="date"
-                            display={Platform.OS === "ios" ? "spinner" : "default"}
-                            onChange={(event, selectedDate) => {
-                              if (Platform.OS !== "ios") setOpenCardPickerId(null);
-                              if (!selectedDate) return;
-                              const day = selectedDate.getDate();
-                              setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
-                              updateCard(c.id, { dueDay: day });
+                        return (
+                          <View
+                            key={c.id}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: COLORS.borderSoft,
+                              borderRadius: 16,
+                              padding: 12,
+                              backgroundColor: "rgba(255,255,255,0.03)",
                             }}
-                          />
-                        ) : null}
+                          >
+                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
 
-                        {Platform.OS === "ios" && openCardPickerId === c.id ? (
-                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                            <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
+                            <Field
+                              label="Name"
+                              value={c.name}
+                              onChangeText={(s) => updateCard(c.id, { name: s })}
+                              placeholder="Chase Freedom"
+                              onFocusScrollToInput={scrollToInput}
+                            />
+
+                            <Field
+                              label="Balance (debt remaining)"
+                              value={balText}
+                              onChangeText={(s) => setCardBalanceText((map) => ({ ...map, [c.id]: keepMoneyChars(s) }))}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              onFocusScrollToInput={scrollToInput}
+                            />
+
+                            <Field
+                              label="Total Amount Due (statement)"
+                              value={String(c.totalDue)}
+                              onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              onFocusScrollToInput={scrollToInput}
+                            />
+
+                            <Field
+                              label="Minimum Due"
+                              value={String(c.minDue)}
+                              onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              onFocusScrollToInput={scrollToInput}
+                            />
+
+                            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
+
+                            <Pressable
+                              onPress={() => setOpenCardPickerId(c.id)}
+                              style={{
+                                marginTop: 6,
+                                borderWidth: 1,
+                                borderColor: COLORS.border,
+                                borderRadius: 14,
+                                paddingVertical: 12,
+                                paddingHorizontal: 12,
+                                backgroundColor: "rgba(255,255,255,0.05)",
+                              }}
+                            >
+                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
+                              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                                Tap to pick a date (we only store the day number)
+                              </Text>
+                            </Pressable>
+
+                            {openCardPickerId === c.id ? (
+                              <DateTimePicker
+                                value={new Date()}
+                                mode="date"
+                                display={Platform.OS === "ios" ? "spinner" : "default"}
+                                onChange={(event, selectedDate) => {
+                                  if (Platform.OS !== "ios") setOpenCardPickerId(null);
+                                  if (!selectedDate) return;
+                                  const day = selectedDate.getDate();
+                                  setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
+                                  updateCard(c.id, { dueDay: day });
+                                }}
+                              />
+                            ) : null}
+
+                            {Platform.OS === "ios" && openCardPickerId === c.id ? (
+                              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                                <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
+                              </View>
+                            ) : null}
+
+                            <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                              <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
+                            </View>
                           </View>
-                        ) : null}
+                        );
+                      })}
 
-                        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                          <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
-                        </View>
-                      </View>
-                    );
-                  })}
-
-                  <TextBtn label="Add credit card" onPress={addCard} />
-                </View>
+                      <TextBtn label="Add credit card" onPress={addCard} />
+                    </View>
+                  </>
+                ) : null}
               </Card>
 
               {/* Actions */}
