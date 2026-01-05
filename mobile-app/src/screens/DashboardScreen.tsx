@@ -1,5 +1,5 @@
 // src/screens/DashboardScreen.tsx
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -33,15 +33,20 @@ if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental
 function getDaysRemaining(targetDate: string | Date) {
   const target = new Date(targetDate);
   const now = new Date();
+  
+  // Strip time (hours/minutes) to compare strictly by calendar day
   target.setHours(0, 0, 0, 0);
   now.setHours(0, 0, 0, 0);
 
+  // Calculate difference in MS
   const diffTime = target.getTime() - now.getTime();
+  // Convert to Days
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0) return "Paid";
+  if (diffDays < 0) return "Paid"; // Or "Past"
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Tomorrow";
+  
   return `${diffDays} days`;
 }
 
@@ -327,9 +332,9 @@ export default function DashboardScreen() {
     }
   };
 
-  // ✅ Auto-collapse Logic
-  const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
-
+  // --- Auto-Collapse Logic ---
+  
+  // 1. Calculate which categories are currently complete
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
     for (const [cat, catItems] of grouped) {
@@ -339,32 +344,47 @@ export default function DashboardScreen() {
     return out;
   }, [grouped, activeChecked]);
 
-  const prevCatCompleteRef = useRef<Record<string, boolean>>({});
+  // 2. State for open/close status (Default to ALL open on load)
+  const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
 
-  React.useEffect(() => {
+  // 3. Track previous complete state to detect CHANGES
+  const prevCatCompleteRef = useRef<Record<string, boolean>>(catComplete);
+  
+  // Initialize 'prev' on first load so we don't trigger "change" animations immediately
+  useEffect(() => {
+      // If prevCatCompleteRef is empty (first run), fill it
+      if (Object.keys(prevCatCompleteRef.current).length === 0 && Object.keys(catComplete).length > 0) {
+          prevCatCompleteRef.current = catComplete;
+      }
+  }, [catComplete]);
+
+  // 4. The Effect: Only collapse when status CHANGES from Incomplete -> Complete
+  useEffect(() => {
     let shouldAnimate = false;
 
     setCatOpen((prev) => {
       const next = { ...prev };
-      const prevMap = prevCatCompleteRef.current || {};
+      const prevMap = prevCatCompleteRef.current;
       
       for (const [cat] of grouped) {
         const key = String(cat);
-        // Default to open if undefined
+        // Default: If undefined, it means "Start Open"
         if (typeof next[key] !== "boolean") next[key] = true;
-        
+
         const wasComplete = !!prevMap[key];
         const isComplete = !!catComplete[key];
 
-        // 1. Just became complete? -> Auto-collapse
+        // Transition: Incomplete -> Complete
+        // We only auto-collapse if it WASN'T complete before, and IS complete now.
         if (!wasComplete && isComplete) {
-           next[key] = false;
+           next[key] = false; // Auto collapse
            shouldAnimate = true;
         }
 
-        // 2. Just became incomplete? -> Auto-expand (Force open)
+        // Transition: Complete -> Incomplete
+        // We auto-expand if the user unchecked something
         if (wasComplete && !isComplete) {
-           next[key] = true;
+           next[key] = true; // Auto expand
            shouldAnimate = true;
         }
       }
@@ -375,8 +395,9 @@ export default function DashboardScreen() {
        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     }
 
+    // Update the ref for the next render cycle
     prevCatCompleteRef.current = { ...catComplete };
-  }, [grouped, catComplete]);
+  }, [catComplete, grouped]); // Dependency on catComplete drives the logic
 
   const toggleCategoryOpen = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -490,6 +511,7 @@ export default function DashboardScreen() {
                 const label = displayCategory(cat as any);
                 const catKey = String(cat);
                 const isComplete = !!catComplete[catKey];
+                // Logic: If undefined, default to TRUE (Open).
                 const isOpen = typeof catOpen[catKey] === "boolean" ? catOpen[catKey] : true;
 
                 return (
