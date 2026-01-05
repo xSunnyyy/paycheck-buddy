@@ -34,16 +34,13 @@ function getDaysRemaining(targetDate: string | Date) {
   const target = new Date(targetDate);
   const now = new Date();
   
-  // Strip time (hours/minutes) to compare strictly by calendar day
   target.setHours(0, 0, 0, 0);
   now.setHours(0, 0, 0, 0);
 
-  // Calculate difference in MS
   const diffTime = target.getTime() - now.getTime();
-  // Convert to Days
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  if (diffDays < 0) return "Paid"; // Or "Past"
+  if (diffDays < 0) return "Paid"; 
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Tomorrow";
   
@@ -332,9 +329,8 @@ export default function DashboardScreen() {
     }
   };
 
-  // --- Fixed Auto-Collapse Logic ---
+  // --- Auto-Collapse Logic (Stabilized) ---
   
-  // 1. Calculate which categories are currently complete
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
     for (const [cat, catItems] of grouped) {
@@ -344,26 +340,24 @@ export default function DashboardScreen() {
     return out;
   }, [grouped, activeChecked]);
 
-  // 2. State for open/close status (Keys missing = Open)
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
 
-  // 3. Track state to detect CHANGES
+  // Use refs to track previous state to prevent infinite loops
   const prevCatCompleteRef = useRef<Record<string, boolean>>({});
   const isFirstRun = useRef(true);
 
-  // 4. The Effect
   useEffect(() => {
-    // Skip logic on very first mount so everything starts OPEN
+    // 1. Initial Load: Don't animate, just sync
     if (isFirstRun.current) {
         prevCatCompleteRef.current = catComplete;
         isFirstRun.current = false;
         return;
     }
 
-    const prevMap = prevCatCompleteRef.current; // Capture OLD state
+    const prevMap = prevCatCompleteRef.current;
     const updates: Record<string, boolean> = {};
-    let hasChanges = false;
-
+    
+    // 2. Check for changes
     for (const [cat] of grouped) {
       const key = String(cat);
       const wasComplete = !!prevMap[key];
@@ -372,29 +366,28 @@ export default function DashboardScreen() {
       // Transition: Incomplete -> Complete (Auto Collapse)
       if (!wasComplete && isComplete) {
          updates[key] = false;
-         hasChanges = true;
       }
 
       // Transition: Complete -> Incomplete (Auto Expand)
       if (wasComplete && !isComplete) {
          updates[key] = true;
-         hasChanges = true;
       }
     }
 
-    if (hasChanges) {
-       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    // 3. Update ONLY if changed
+    if (Object.keys(updates).length > 0) {
+       // ✅ Safe to animate now because we are guarded by the 'updates' check
+       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); 
        setCatOpen(prev => ({ ...prev, ...updates }));
     }
 
-    // Update ref for next run
+    // 4. Save state for next run
     prevCatCompleteRef.current = catComplete;
   }, [catComplete, grouped]);
 
   const toggleCategoryOpen = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setCatOpen((prev) => {
-      // If undefined, it defaults to TRUE (Open), so we toggle to FALSE
       const curr = typeof prev[key] === "boolean" ? prev[key] : true;
       return { ...prev, [key]: !curr };
     });
@@ -505,7 +498,6 @@ export default function DashboardScreen() {
                 const catKey = String(cat);
                 const isComplete = !!catComplete[catKey];
                 
-                // Logic: If key is undefined in catOpen, default to TRUE (Open)
                 const isOpen = typeof catOpen[catKey] === "boolean" ? catOpen[catKey] : true;
 
                 return (
