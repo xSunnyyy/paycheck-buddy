@@ -21,12 +21,7 @@ import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 import { usePayflow } from "@/src/state/PayFlowProvider";
 
 // ✅ helpers + types stay from usePayflow.ts
-import {
-  fmtMoney,
-  formatDate,
-  displayCategory,
-  type CreditCard,
-} from "@/src/state/usePayflow";
+import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
@@ -244,6 +239,115 @@ export default function DashboardScreen() {
     if (!payCardId && payableCards.length > 0) setPayCardId(payableCards[0].id);
   }, [payCardId, payableCards]);
 
+  /* ---------------- NEW: auto-collapse + completed tab for each checklist category ---------------- */
+
+  // open/closed per category key (defaults to OPEN to preserve your current behavior)
+  const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
+
+  // if a category is complete but user intentionally opened it, we won't auto-close it again
+  const [catUserOpenedWhileComplete, setCatUserOpenedWhileComplete] = useState<Record<string, boolean>>({});
+
+  // compute completion per category (derived from activeChecked)
+  const catComplete = useMemo(() => {
+    const out: Record<string, boolean> = {};
+    for (const [cat, catItems] of grouped) {
+      const key = String(cat);
+      const complete =
+        catItems.length > 0 && catItems.every((it) => !!activeChecked[it.id]?.checked);
+      out[key] = complete;
+    }
+    return out;
+  }, [grouped, activeChecked]);
+
+  // remember previous completion so we can react on transitions
+  const prevCatCompleteRef = useRef<Record<string, boolean>>({});
+
+  // initialize catOpen for any new categories we see, and apply auto-open/close transitions
+  React.useEffect(() => {
+    setCatOpen((prev) => {
+      const next = { ...prev };
+
+      // ensure every category has a value (default open)
+      for (const [cat] of grouped) {
+        const key = String(cat);
+        if (typeof next[key] !== "boolean") next[key] = true;
+      }
+
+      const prevComplete = prevCatCompleteRef.current || {};
+
+      for (const [cat] of grouped) {
+        const key = String(cat);
+        const was = !!prevComplete[key];
+        const now = !!catComplete[key];
+        const userOverride = !!catUserOpenedWhileComplete[key];
+
+        // incomplete -> complete: auto-collapse unless user forced open
+        if (!was && now) {
+          if (!userOverride) next[key] = false;
+        }
+
+        // complete -> incomplete: force open again + clear override (so it stays open)
+        if (was && !now) {
+          next[key] = true;
+        }
+      }
+
+      return next;
+    });
+
+    // clear override when a section becomes incomplete again
+    setCatUserOpenedWhileComplete((prev) => {
+      const next = { ...prev };
+      const prevComplete = prevCatCompleteRef.current || {};
+      for (const [cat] of grouped) {
+        const key = String(cat);
+        const was = !!prevComplete[key];
+        const now = !!catComplete[key];
+        if (was && !now) next[key] = false;
+      }
+      return next;
+    });
+
+    // update prev map
+    prevCatCompleteRef.current = { ...catComplete };
+  }, [grouped, catComplete, catUserOpenedWhileComplete]);
+
+  const toggleCategoryOpen = (key: string) => {
+    setCatOpen((prev) => {
+      const curr = typeof prev[key] === "boolean" ? prev[key] : true;
+      const nextOpen = !curr;
+
+      // if complete and user opens, mark override so it doesn't auto-collapse immediately
+      if (catComplete[key] && nextOpen) {
+        setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: true }));
+      }
+
+      // if they collapse while complete, remove override
+      if (catComplete[key] && !nextOpen) {
+        setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: false }));
+      }
+
+      return { ...prev, [key]: nextOpen };
+    });
+  };
+
+  const CompletedTab = () => (
+    <View
+      style={{
+        paddingVertical: 6,
+        paddingHorizontal: 10,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: "rgba(34,197,94,0.40)",
+        backgroundColor: "rgba(34,197,94,0.14)",
+      }}
+    >
+      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>Completed</Text>
+    </View>
+  );
+
+  /* ---------------------------------------------------------------------------------------------- */
+
   if (!loaded) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
@@ -268,11 +372,7 @@ export default function DashboardScreen() {
 
             <Divider />
 
-            <TextBtn
-              label="Mark setup complete (dev)"
-              kind="green"
-              onPress={() => setHasCompletedSetup(true)}
-            />
+            <TextBtn label="Mark setup complete (dev)" kind="green" onPress={() => setHasCompletedSetup(true)} />
           </Card>
         </View>
       </SafeAreaView>
@@ -340,10 +440,7 @@ export default function DashboardScreen() {
               <Card>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                   <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Summary</Text>
-                  <TextBtn
-                    label={summaryCollapsed ? "Show" : "Hide"}
-                    onPress={() => setSummaryCollapsed((v) => !v)}
-                  />
+                  <TextBtn label={summaryCollapsed ? "Show" : "Hide"} onPress={() => setSummaryCollapsed((v) => !v)} />
                 </View>
 
                 <Divider />
@@ -382,40 +479,76 @@ export default function DashboardScreen() {
                 const label = displayCategory(cat as any);
                 const isCreditCards = String(cat) === "Credit Cards";
 
+                const catKey = String(cat);
+                const isComplete = !!catComplete[catKey];
+                const isOpen = typeof catOpen[catKey] === "boolean" ? catOpen[catKey] : true;
+
                 return (
                   <React.Fragment key={String(cat)}>
                     <Card>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                        <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{label}</Text>
-                        <Chip>{fmtMoney(plannedForCat)} planned</Chip>
-                      </View>
+                      {/* ✅ NEW: press header to collapse/expand + completed green tab */}
+                      <Pressable
+                        onPress={() => toggleCategoryOpen(catKey)}
+                        style={{
+                          flexDirection: "row",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 10,
+                          paddingVertical: 6,
+                          paddingHorizontal: 8,
+                          marginHorizontal: -8,
+                          borderRadius: 16,
+                          backgroundColor: isComplete && !isOpen ? "rgba(34,197,94,0.12)" : "transparent",
+                        }}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{label}</Text>
+                        </View>
 
-                      <Divider />
+                        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+                          {isComplete ? <CompletedTab /> : null}
+                          <Chip>{fmtMoney(plannedForCat)} planned</Chip>
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{isOpen ? "▾" : "▸"}</Text>
+                        </View>
+                      </Pressable>
 
-                      <View style={{ gap: 10 }}>
-                        {catItems.map((it) => {
-                          const state = activeChecked[it.id];
-                          const isChecked = !!state?.checked;
+                      {/* only show divider + list when open */}
+                      {isOpen ? (
+                        <>
+                          <Divider />
 
-                          const subtitleParts: string[] = [];
-                          if (it.notes) subtitleParts.push(it.notes);
-                          if (isChecked && state?.at)
-                            subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
+                          <View style={{ gap: 10 }}>
+                            {catItems.map((it) => {
+                              const state = activeChecked[it.id];
+                              const isChecked = !!state?.checked;
 
-                          const subtitle = subtitleParts.filter(Boolean).join(" • ");
+                              const subtitleParts: string[] = [];
+                              if (it.notes) subtitleParts.push(it.notes);
+                              if (isChecked && state?.at) subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
 
-                          return (
-                            <ListRow
-                              key={it.id}
-                              title={it.label}
-                              subtitle={subtitle || undefined}
-                              amount={fmtMoney(it.amount)}
-                              checked={isChecked}
-                              onPress={() => toggleItem(it.id)}
-                            />
-                          );
-                        })}
-                      </View>
+                              const subtitle = subtitleParts.filter(Boolean).join(" • ");
+
+                              return (
+                                <ListRow
+                                  key={it.id}
+                                  title={it.label}
+                                  subtitle={subtitle || undefined}
+                                  amount={fmtMoney(it.amount)}
+                                  checked={isChecked}
+                                  onPress={() => toggleItem(it.id)}
+                                />
+                              );
+                            })}
+                          </View>
+                        </>
+                      ) : (
+                        <>
+                          <Divider />
+                          <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                            {isComplete ? "All items completed. Tap to expand." : "Tap to expand."}
+                          </Text>
+                        </>
+                      )}
                     </Card>
 
                     {/* Credit Card Payments under Credit Cards */}
@@ -436,10 +569,7 @@ export default function DashboardScreen() {
                             </Text>
                           </View>
 
-                          <TextBtn
-                            label={paymentsCollapsed ? "Show" : "Hide"}
-                            onPress={() => setPaymentsCollapsed((v) => !v)}
-                          />
+                          <TextBtn label={paymentsCollapsed ? "Show" : "Hide"} onPress={() => setPaymentsCollapsed((v) => !v)} />
                         </View>
 
                         {paymentsCollapsed ? null : (
@@ -464,10 +594,8 @@ export default function DashboardScreen() {
                                         paddingHorizontal: 10,
                                         borderRadius: 999,
                                         borderWidth: 1,
-                                        borderColor:
-                                          payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                                        backgroundColor:
-                                          payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                                        borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                                        backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
                                       }}
                                     >
                                       <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
@@ -533,11 +661,7 @@ export default function DashboardScreen() {
                                           </View>
                                           <View style={{ alignItems: "flex-end", gap: 8 }}>
                                             <Chip>{fmtMoney(p.amount)}</Chip>
-                                            <TextBtn
-                                              label="Remove"
-                                              kind="red"
-                                              onPress={() => removeCardPayment(viewCycle.id, p.id)}
-                                            />
+                                            <TextBtn label="Remove" kind="red" onPress={() => removeCardPayment(viewCycle.id, p.id)} />
                                           </View>
                                         </View>
                                       </View>
@@ -574,9 +698,7 @@ export default function DashboardScreen() {
                     <View style={{ gap: 10 }}>
                       {unexpected.map((x) => {
                         // @ts-ignore (x.cardId exists once you updated the type)
-                        const cardName = x.cardId
-                          ? (settings.creditCards || []).find((c) => c.id === x.cardId)?.name
-                          : null;
+                        const cardName = x.cardId ? (settings.creditCards || []).find((c) => c.id === x.cardId)?.name : null;
 
                         return (
                           <View
@@ -599,11 +721,7 @@ export default function DashboardScreen() {
                               </View>
                               <View style={{ alignItems: "flex-end", gap: 8 }}>
                                 <Chip>{fmtMoney(x.amount)}</Chip>
-                                <TextBtn
-                                  label="Remove"
-                                  kind="red"
-                                  onPress={() => removeUnexpected(viewCycle.id, x.id)}
-                                />
+                                <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
                               </View>
                             </View>
                           </View>
@@ -614,9 +732,7 @@ export default function DashboardScreen() {
                 ) : (
                   <>
                     <Divider />
-                    <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                      None yet. Tap “Add” to record one.
-                    </Text>
+                    <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None yet. Tap “Add” to record one.</Text>
                   </>
                 )}
               </Card>
