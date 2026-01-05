@@ -354,7 +354,7 @@ export default function DashboardScreen() {
     }
   };
 
-  // --- Auto-Collapse Logic with Debounce (Fixes Glitch) ---
+  // --- Auto-Collapse Logic (Immediate Mode) ---
   
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
@@ -379,6 +379,7 @@ export default function DashboardScreen() {
 
     const prevMap = prevCatCompleteRef.current;
     const updates: Record<string, boolean> = {};
+    let hasChanges = false;
     
     for (const [cat] of grouped) {
       const key = String(cat);
@@ -388,20 +389,19 @@ export default function DashboardScreen() {
       // Incomplete -> Complete (Auto Collapse)
       if (!wasComplete && isComplete) {
          updates[key] = false;
+         hasChanges = true;
       }
       // Complete -> Incomplete (Auto Expand)
       if (wasComplete && !isComplete) {
          updates[key] = true;
+         hasChanges = true;
       }
     }
 
-    // Debounce the animation to allow Balance Text updates to finish first
-    if (Object.keys(updates).length > 0) {
-       const timer = setTimeout(() => {
-         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); 
-         setCatOpen(prev => ({ ...prev, ...updates }));
-       }, 200); // 200ms delay to prevent glitching with text updates
-       return () => clearTimeout(timer);
+    if (hasChanges) {
+       // Using Linear animation which is more stable for text updates than EaseInEaseOut
+       LayoutAnimation.configureNext(LayoutAnimation.Presets.linear); 
+       setCatOpen(prev => ({ ...prev, ...updates }));
     }
 
     prevCatCompleteRef.current = catComplete;
