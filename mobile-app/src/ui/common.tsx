@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { Platform, Pressable, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, Text, TextInput, View, StyleSheet, StyleProp, ViewStyle, TextStyle } from "react-native";
 
 export const COLORS = {
   bg: "#070A10",
@@ -22,61 +22,32 @@ export const TYPE = {
   body: { fontSize: 13, fontWeight: "600" as const },
 };
 
-export function Card({ children }: { children: React.ReactNode }) {
+// 1. Memoized Card
+export const Card = React.memo(function Card({ children }: { children: React.ReactNode }) {
   return (
-    <View
-      style={{
-        borderRadius: 18,
-        borderWidth: 1,
-        borderColor: COLORS.border,
-        backgroundColor: "transparent",
-        overflow: "hidden",
-      }}
-    >
-      <View
-        style={{
-          padding: 14,
-          backgroundColor: COLORS.glassB,
-          borderTopWidth: 1,
-          borderTopColor: "rgba(255,255,255,0.10)",
-        }}
-      >
+    <View style={styles.cardContainer}>
+      <View style={styles.cardContent}>
         {children}
       </View>
     </View>
   );
-}
+});
 
-export function Divider() {
-  return (
-    <View
-      style={{
-        height: 1,
-        backgroundColor: "rgba(255,255,255,0.10)",
-        marginVertical: 10,
-      }}
-    />
-  );
-}
+// 2. Memoized Divider
+export const Divider = React.memo(function Divider() {
+  return <View style={styles.divider} />;
+});
 
-export function Chip({ children }: { children: React.ReactNode }) {
+// 3. Memoized Chip
+export const Chip = React.memo(function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <View
-      style={{
-        alignSelf: "flex-start",
-        paddingVertical: 6,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: COLORS.borderSoft,
-        backgroundColor: "rgba(255,255,255,0.06)",
-      }}
-    >
-      <Text style={{ color: COLORS.text, fontWeight: "800" }}>{children}</Text>
+    <View style={styles.chip}>
+      <Text style={styles.chipText}>{children}</Text>
     </View>
   );
-}
+});
 
+// 4. Text Button (dynamic styles based on 'kind')
 export function TextBtn({
   label,
   onPress,
@@ -88,39 +59,24 @@ export function TextBtn({
   kind?: "default" | "green" | "red";
   disabled?: boolean;
 }) {
-  const bg =
-    kind === "green"
-      ? "rgba(34,197,94,0.18)"
-      : kind === "red"
-      ? "rgba(248,113,113,0.16)"
-      : "rgba(255,255,255,0.06)";
-
-  const br =
-    kind === "green"
-      ? "rgba(34,197,94,0.30)"
-      : kind === "red"
-      ? "rgba(248,113,113,0.30)"
-      : COLORS.border;
+  const getStyle = () => {
+    if (kind === "green") return styles.btnGreen;
+    if (kind === "red") return styles.btnRed;
+    return styles.btnDefault;
+  };
 
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
-      style={{
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: br,
-        backgroundColor: bg,
-        opacity: disabled ? 0.45 : 1,
-      }}
+      style={[styles.btnBase, getStyle(), disabled && styles.disabled]}
     >
-      <Text style={{ color: COLORS.text, fontWeight: "900" }}>{label}</Text>
+      <Text style={styles.btnText}>{label}</Text>
     </Pressable>
   );
 }
 
+// 5. Input Field
 export function Field({
   label,
   value,
@@ -130,8 +86,6 @@ export function Field({
   onFocusScrollToInput,
   borderColorOverride,
   clearOnFocus = false,
-
-  // ✅ NEW optional niceties
   multiline = false,
   numberOfLines,
   autoCapitalize = "none",
@@ -144,22 +98,18 @@ export function Field({
   onFocusScrollToInput?: (inputRef: React.RefObject<TextInput>) => void;
   borderColorOverride?: string;
   clearOnFocus?: boolean;
-
   multiline?: boolean;
   numberOfLines?: number;
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
 }) {
   const inputRef = useRef<TextInput>(null);
 
-  // ✅ Better numeric keyboard:
-  // - iOS "numeric" doesn’t include decimals; "decimal-pad" does.
-  // - Android "numeric" is fine for most cases.
   const nativeKeyboardType: any =
     keyboardType === "numeric" && Platform.OS === "ios" ? "decimal-pad" : keyboardType;
 
   return (
-    <View style={{ marginTop: 10 }}>
-      <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
+    <View style={styles.fieldContainer}>
+      <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
         ref={inputRef}
         value={value}
@@ -175,19 +125,104 @@ export function Field({
         autoCapitalize={autoCapitalize}
         multiline={multiline}
         numberOfLines={numberOfLines}
-        style={{
-          marginTop: 6,
-          borderWidth: 1,
-          borderColor: borderColorOverride ?? COLORS.border,
-          borderRadius: 14,
-          paddingVertical: Platform.OS === "ios" ? 12 : 10,
-          paddingHorizontal: 12,
-          color: COLORS.textStrong,
-          backgroundColor: "rgba(255,255,255,0.05)",
-          fontWeight: "800",
-          ...(multiline ? { minHeight: 44, textAlignVertical: "top" as const } : null),
-        }}
+        style={[
+          styles.input,
+          borderColorOverride ? { borderColor: borderColorOverride } : null,
+          multiline && styles.inputMultiline
+        ]}
       />
     </View>
   );
 }
+
+// --- StyleSheet ---
+
+const styles = StyleSheet.create({
+  // Card
+  cardContainer: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: "transparent",
+    overflow: "hidden",
+  },
+  cardContent: {
+    padding: 14,
+    backgroundColor: COLORS.glassB,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(255,255,255,0.10)",
+  },
+
+  // Divider
+  divider: {
+    height: 1,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    marginVertical: 10,
+  },
+
+  // Chip
+  chip: {
+    alignSelf: "flex-start",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.borderSoft,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  chipText: {
+    color: COLORS.text,
+    fontWeight: "800",
+  },
+
+  // Buttons
+  btnBase: {
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  btnText: {
+    color: COLORS.text,
+    fontWeight: "900",
+  },
+  btnDefault: {
+    borderColor: COLORS.border,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  btnGreen: {
+    borderColor: "rgba(34,197,94,0.30)",
+    backgroundColor: "rgba(34,197,94,0.18)",
+  },
+  btnRed: {
+    borderColor: "rgba(248,113,113,0.30)",
+    backgroundColor: "rgba(248,113,113,0.16)",
+  },
+  disabled: {
+    opacity: 0.45,
+  },
+
+  // Field
+  fieldContainer: {
+    marginTop: 10,
+  },
+  fieldLabel: {
+    color: COLORS.muted,
+    ...TYPE.label,
+  },
+  input: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingVertical: Platform.OS === "ios" ? 12 : 10,
+    paddingHorizontal: 12,
+    color: COLORS.textStrong,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    fontWeight: "800",
+  },
+  inputMultiline: {
+    minHeight: 44,
+    textAlignVertical: "top",
+  },
+});
