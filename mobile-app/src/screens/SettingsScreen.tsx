@@ -13,17 +13,14 @@ import {
   findNodeHandle,
   LayoutAnimation,
   UIManager,
+  StyleSheet,
 } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
-
-// ✅ IMPORTANT: use the Provider hook (single shared store instance)
 import { usePayflow } from "@/src/state/PayFlowProvider";
-
-// ✅ helpers + types still come from the store file
 import {
   safeParseNumber,
   type Settings,
@@ -35,7 +32,7 @@ import {
 
 import { Card, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
-/* ---------------- helpers ---------------- */
+/* ---------------- Helpers ---------------- */
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -67,11 +64,11 @@ function formatDate(d: Date) {
 
 type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
 
-/* ---------------- collapsible section ---------------- */
-
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
+
+/* ---------------- Components ---------------- */
 
 function SectionHeader({
   title,
@@ -88,23 +85,79 @@ function SectionHeader({
         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
         onToggle();
       }}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        paddingVertical: 10,
-      }}
+      style={styles.sectionHeader}
       hitSlop={10}
     >
-      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{title}</Text>
-      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 18 }}>
-        {open ? "▾" : "▸"}
-      </Text>
+      <Text style={styles.h2}>{title}</Text>
+      <Text style={styles.arrow}>{open ? "▾" : "▸"}</Text>
     </Pressable>
   );
 }
 
-/* ---------------- screen ---------------- */
+// Reusable Date/Day Picker for Monthly Items & Cards
+function DayPicker({ 
+  label, 
+  valueDay, 
+  isOpen, 
+  onToggle, 
+  onChange 
+}: { 
+  label: string; 
+  valueDay: number; 
+  isOpen: boolean; 
+  onToggle: () => void; 
+  onChange: (d: number) => void; 
+}) {
+  return (
+    <>
+      <Text style={styles.label}>{label}</Text>
+      <Pressable onPress={onToggle} style={styles.pickerButton}>
+        <Text style={styles.textStrong}>Day {valueDay || 1} of the month</Text>
+        <Text style={styles.faintText}>Tap to pick a date</Text>
+      </Pressable>
+
+      {isOpen && (
+        <DateTimePicker
+          value={new Date()} // Date doesn't matter, only day
+          mode="date"
+          display={Platform.OS === "ios" ? "spinner" : "default"}
+          onChange={(event, selectedDate) => {
+            if (selectedDate) onChange(selectedDate.getDate());
+          }}
+        />
+      )}
+      
+      {Platform.OS === "ios" && isOpen && (
+        <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+          <TextBtn label="Done" onPress={onToggle} kind="green" />
+        </View>
+      )}
+    </>
+  );
+}
+
+// Reusable Editable List Item Container
+function EditableItem({ 
+  title, 
+  onRemove, 
+  children 
+}: { 
+  title: string; 
+  onRemove: () => void; 
+  children: React.ReactNode 
+}) {
+  return (
+    <View style={styles.editableItem}>
+      <Text style={styles.textStrong}>{title}</Text>
+      {children}
+      <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+        <TextBtn label="Remove" onPress={onRemove} kind="red" />
+      </View>
+    </View>
+  );
+}
+
+/* ---------------- Main Screen ---------------- */
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -122,69 +175,46 @@ export default function SettingsScreen() {
   } = usePayflow();
 
   const mode: "setup" | "normal" = hasCompletedSetup ? "normal" : "setup";
-
   const scrollRef = useRef<ScrollView>(null);
 
   const [local, setLocal] = useState<Settings>(settings);
   const [showAnchorPicker, setShowAnchorPicker] = useState(false);
   const [anchorError, setAnchorError] = useState(false);
 
-  // Editable due-day buffers (lets user delete/retype fully)
+  // Buffer state for text inputs
   const [monthlyDueText, setMonthlyDueText] = useState<Record<string, string>>({});
   const [cardDueText, setCardDueText] = useState<Record<string, string>>({});
-
-  // ✅ editable balance buffer for cards
   const [cardBalanceText, setCardBalanceText] = useState<Record<string, string>>({});
 
-  // Calendar picker open card id
+  // Pickers
   const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
-
-  // ✅ NEW: Calendar picker open monthly item id
   const [openMonthlyPickerId, setOpenMonthlyPickerId] = useState<string | null>(null);
 
-  // ✅ Collapsed by default (as requested)
+  // Accordion state
   const [openTotals, setOpenTotals] = useState(false);
   const [openDistributions, setOpenDistributions] = useState(false);
   const [openPersonalSpending, setOpenPersonalSpending] = useState(false);
   const [openMonthlyExpenses, setOpenMonthlyExpenses] = useState(false);
   const [openCreditCards, setOpenCreditCards] = useState(false);
 
-  // ✅ Expand all / Collapse all
-  const expandAll = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setOpenTotals(true);
-    setOpenDistributions(true);
-    setOpenPersonalSpending(true);
-    setOpenMonthlyExpenses(true);
-    setOpenCreditCards(true);
-  };
-
-  const collapseAll = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setOpenTotals(false);
-    setOpenDistributions(false);
-    setOpenPersonalSpending(false);
-    setOpenMonthlyExpenses(false);
-    setOpenCreditCards(false);
-  };
-
   useEffect(() => {
     setLocal(settings);
+    // Initialize buffers
+    const mDue: Record<string, string> = {};
+    const cDue: Record<string, string> = {};
+    const cBal: Record<string, string> = {};
+    
+    settings.monthlyItems?.forEach(m => mDue[m.id] = String(m.dueDay ?? ""));
+    settings.creditCards?.forEach(c => {
+      cDue[c.id] = String(c.dueDay ?? "");
+      cBal[c.id] = String(c.balance ?? "");
+    });
 
-    const nextMonthlyMap: Record<string, string> = {};
-    for (const m of settings.monthlyItems || []) nextMonthlyMap[m.id] = String(m.dueDay ?? "");
-    setMonthlyDueText(nextMonthlyMap);
-
-    const nextCardMap: Record<string, string> = {};
-    for (const c of settings.creditCards || []) nextCardMap[c.id] = String(c.dueDay ?? "");
-    setCardDueText(nextCardMap);
-
-    const nextBalMap: Record<string, string> = {};
-    for (const c of settings.creditCards || []) nextBalMap[c.id] = String(c.balance ?? "");
-    setCardBalanceText(nextBalMap);
+    setMonthlyDueText(mDue);
+    setCardDueText(cDue);
+    setCardBalanceText(cBal);
   }, [settings]);
 
-  // ✅ the version that fixes Android (keyboard appears slightly after focus)
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
     setTimeout(() => {
       const node = findNodeHandle(inputRef.current);
@@ -194,141 +224,18 @@ export default function SettingsScreen() {
     }, 60);
   };
 
-  const keepDigitsOnly = (s: string) => s.replace(/[^0-9]/g, "");
   const keepMoneyChars = (s: string) => s.replace(/[^0-9.]/g, "");
-
   const shouldShowAnchor = local.payFrequency === "weekly" || local.payFrequency === "biweekly";
   const anchorSelected = hasValidAnchorDate(local.anchorISO);
 
-  const freqLabel = (f: PayFrequency) => {
-    if (f === "weekly") return "Weekly";
-    if (f === "biweekly") return "Bi-weekly";
-    if (f === "twice_monthly") return "Twice-monthly";
-    return "Monthly";
-  };
+  // --- Actions ---
 
-  function setFreq(f: PayFrequency) {
+  const setFreq = (f: PayFrequency) => {
     setLocal((s) => ({ ...s, payFrequency: f }));
     if (!(f === "weekly" || f === "biweekly")) setAnchorError(false);
-  }
+  };
 
-  /* ---------------- Distributions ---------------- */
-
-  function addDistribution() {
-    const id = `alloc_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      allocations: [...(s.allocations || []), { id, label: "", amount: 0 }],
-    }));
-  }
-
-  function updateDistribution(id: string, patch: Partial<Allocation>) {
-    setLocal((s) => ({
-      ...s,
-      allocations: (s.allocations || []).map((a) => (a.id === id ? { ...a, ...patch } : a)),
-    }));
-  }
-
-  function removeDistribution(id: string) {
-    setLocal((s) => ({
-      ...s,
-      allocations: (s.allocations || []).filter((a) => a.id !== id),
-    }));
-  }
-
-  /* ---------------- Personal Spending ---------------- */
-
-  function addPersonalSpending() {
-    const id = `ps_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      personalSpending: [...(s.personalSpending || []), { id, label: "", amount: 0 }],
-    }));
-  }
-
-  function updatePersonalSpending(id: string, patch: Partial<PersonalSpendingItem>) {
-    setLocal((s) => ({
-      ...s,
-      personalSpending: (s.personalSpending || []).map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    }));
-  }
-
-  function removePersonalSpending(id: string) {
-    setLocal((s) => ({
-      ...s,
-      personalSpending: (s.personalSpending || []).filter((p) => p.id !== id),
-    }));
-  }
-
-  /* ---------------- Monthly Items ---------------- */
-
-  function addMonthlyItem() {
-    const id = `monthly_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: [...(s.monthlyItems || []), { id, label: "", amount: 0, dueDay: 1 }],
-    }));
-    setMonthlyDueText((m) => ({ ...m, [id]: "" }));
-  }
-
-  function updateMonthlyItem(id: string, patch: Partial<MonthlyItem>) {
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: (s.monthlyItems || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
-    }));
-  }
-
-  function removeMonthlyItem(id: string) {
-    setLocal((s) => ({
-      ...s,
-      monthlyItems: (s.monthlyItems || []).filter((m) => m.id !== id),
-    }));
-    setMonthlyDueText((m) => {
-      const next = { ...m };
-      delete next[id];
-      return next;
-    });
-  }
-
-  /* ---------------- Credit Cards ---------------- */
-
-  function updateCard(cardId: string, patch: Partial<CreditCard>) {
-    setLocal((s) => ({
-      ...s,
-      creditCards: (s.creditCards || []).map((c) => (c.id === cardId ? { ...c, ...patch } : c)),
-    }));
-  }
-
-  function addCard() {
-    const id = `cc_${Date.now()}`;
-    setLocal((s) => ({
-      ...s,
-      creditCards: [...(s.creditCards || []), { id, name: "", balance: 0, totalDue: 0, minDue: 0, dueDay: 1 }],
-    }));
-    setCardDueText((m) => ({ ...m, [id]: "" }));
-    setCardBalanceText((m) => ({ ...m, [id]: "" }));
-  }
-
-  function removeCard(id: string) {
-    setLocal((s) => ({
-      ...s,
-      creditCards: (s.creditCards || []).filter((c) => c.id !== id),
-    }));
-    setCardDueText((m) => {
-      const next = { ...m };
-      delete next[id];
-      return next;
-    });
-    setCardBalanceText((m) => {
-      const next = { ...m };
-      delete next[id];
-      return next;
-    });
-  }
-
-  /* ---------------- Save ---------------- */
-
-  function save() {
+  const save = () => {
     if (shouldShowAnchor && !hasValidAnchorDate(local.anchorISO)) {
       setAnchorError(true);
       Alert.alert("Select a payday", "Please choose your payday to finish setup.");
@@ -337,114 +244,68 @@ export default function SettingsScreen() {
 
     const monthlyItems: MonthlyItem[] = (local.monthlyItems || []).map((m) => {
       const t = monthlyDueText[m.id] ?? String(m.dueDay ?? "");
-      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
-      return { ...m, dueDay: n };
+      return { ...m, dueDay: clamp(Math.floor(safeParseNumber(t)), 1, 31) };
     });
 
     const creditCards: CreditCard[] = (local.creditCards || []).map((c) => {
       const t = cardDueText[c.id] ?? String(c.dueDay ?? "");
-      const n = clamp(Math.floor(safeParseNumber(t)), 1, 31);
-
       const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
-      const bal = Math.max(0, safeParseNumber(keepMoneyChars(balText)));
-
-      return { ...c, dueDay: n, balance: bal };
+      return { 
+        ...c, 
+        dueDay: clamp(Math.floor(safeParseNumber(t)), 1, 31),
+        balance: Math.max(0, safeParseNumber(keepMoneyChars(balText)))
+      };
     });
 
     const nextLocal: Settings = { ...local, monthlyItems, creditCards };
-
+    
+    // Validations
     if (nextLocal.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
     if (nextLocal.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
-    if (nextLocal.twiceMonthlyDay1 < 1 || nextLocal.twiceMonthlyDay1 > 28)
-      return Alert.alert("Invalid", "Twice-monthly day #1 must be 1–28");
-    if (nextLocal.twiceMonthlyDay2 < 1 || nextLocal.twiceMonthlyDay2 > 28)
-      return Alert.alert("Invalid", "Twice-monthly day #2 must be 1–28");
-    if (nextLocal.monthlyPayDay < 1 || nextLocal.monthlyPayDay > 28)
-      return Alert.alert("Invalid", "Monthly payday must be 1–28");
-
+    
     setSettings(nextLocal);
 
     if (mode === "setup") {
       setHasCompletedSetup(true);
-      requestAnimationFrame(() => {
-        router.replace("/(tabs)/index");
-      });
-      Alert.alert("Saved", "Setup complete. You can now use Dashboard + History.");
+      requestAnimationFrame(() => router.replace("/(tabs)/index"));
+      Alert.alert("Saved", "Setup complete.");
     } else {
-      Alert.alert("Saved", "Settings saved to device.");
+      Alert.alert("Saved", "Settings saved.");
     }
-  }
+  };
 
-  function confirmResetAll() {
-    Alert.alert("Reset ALL", "This clears all saved data and returns to setup. Continue?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Reset ALL",
-        style: "destructive",
-        onPress: async () => {
-          await resetEverything();
-          Alert.alert("Reset", "All data cleared. Please complete setup again.");
-        },
-      },
-    ]);
-  }
+  // --- Render ---
 
-  /* ---------------- UI ---------------- */
-
-  if (!loaded) {
-    return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Loading…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  if (!loaded) return <LoadingScreen />;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={styles.fullScreen} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={keyboardOffset}
       >
-        <View
-          style={{
-            flex: 1,
-            paddingHorizontal: 16,
-            paddingTop: 10,
-            paddingBottom: 14 + insets.bottom,
-            backgroundColor: COLORS.bg,
-          }}
-        >
+        <View style={[styles.container, { paddingBottom: 14 + insets.bottom }]}>
           <ScrollView
             ref={scrollRef}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={{
-              paddingBottom: 420 + keyboardHeight,
-            }}
+            contentContainerStyle={{ paddingBottom: 420 + keyboardHeight }}
           >
             <View style={{ gap: 12 }}>
-              {/* Pay schedule */}
+              
+              {/* Pay Schedule Card */}
               <Card>
-                <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>
-                  {mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}
-                </Text>
-                <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                  Choose one of the 4 options.
-                </Text>
-
+                <Text style={styles.h2}>{mode === "setup" ? "Pay schedule (setup)" : "Pay schedule"}</Text>
+                <Text style={styles.mutedText}>Choose one of the 4 options.</Text>
                 <Divider />
-
-                <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                
+                <View style={styles.rowWrap}>
                   {(["weekly", "biweekly", "twice_monthly", "monthly"] as PayFrequency[]).map((f) => (
                     <TextBtn
                       key={f}
-                      label={freqLabel(f)}
+                      label={f.replace("_", "-")}
                       onPress={() => setFreq(f)}
                       kind={local.payFrequency === f ? "green" : "default"}
                     />
@@ -460,484 +321,203 @@ export default function SettingsScreen() {
                   onFocusScrollToInput={scrollToInput}
                 />
 
-                {shouldShowAnchor ? (
+                {shouldShowAnchor && (
                   <>
-                    <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Payday</Text>
-
+                    <Text style={[styles.label, { marginTop: 10 }]}>Payday</Text>
                     <Pressable
                       onPress={() => setShowAnchorPicker(true)}
-                      style={{
-                        marginTop: 6,
-                        borderWidth: 1,
-                        borderColor: anchorError && !anchorSelected ? COLORS.redBorder : COLORS.border,
-                        borderRadius: 14,
-                        paddingVertical: 12,
-                        paddingHorizontal: 12,
-                        backgroundColor: "rgba(255,255,255,0.05)",
-                      }}
+                      style={[
+                        styles.pickerButton,
+                        anchorError && !anchorSelected ? { borderColor: COLORS.redBorder } : {}
+                      ]}
                     >
-                      <Text style={{ color: anchorSelected ? COLORS.textStrong : COLORS.faint, fontWeight: "800" }}>
+                      <Text style={[styles.textStrong, !anchorSelected && { color: COLORS.faint }]}>
                         {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                       </Text>
-                      <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>Tap to pick a date</Text>
                     </Pressable>
-
-                    {showAnchorPicker ? (
+                    {showAnchorPicker && (
                       <DateTimePicker
                         value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
                         mode="date"
                         display={Platform.OS === "ios" ? "spinner" : "default"}
                         onChange={(event, selectedDate) => {
                           if (Platform.OS !== "ios") setShowAnchorPicker(false);
-                          if (!selectedDate) return;
-                          setAnchorError(false);
-                          setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
+                          if (selectedDate) {
+                            setAnchorError(false);
+                            setLocal((p) => ({ ...p, anchorISO: toAnchorISO(selectedDate) }));
+                          }
                         }}
                       />
-                    ) : null}
-
-                    {Platform.OS === "ios" && showAnchorPicker ? (
+                    )}
+                    {Platform.OS === "ios" && showAnchorPicker && (
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
                         <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
                       </View>
-                    ) : null}
+                    )}
                   </>
-                ) : null}
-
-                {local.payFrequency === "twice_monthly" ? (
-                  <>
-                    <Field
-                      label="Twice-monthly payday #1 (1–28)"
-                      value={String(local.twiceMonthlyDay1)}
-                      onChangeText={(s) =>
-                        setLocal((p) => ({ ...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28) }))
-                      }
-                      keyboardType="numeric"
-                      placeholder="1"
-                      onFocusScrollToInput={scrollToInput}
-                    />
-                    <Field
-                      label="Twice-monthly payday #2 (1–28)"
-                      value={String(local.twiceMonthlyDay2)}
-                      onChangeText={(s) =>
-                        setLocal((p) => ({ ...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28) }))
-                      }
-                      keyboardType="numeric"
-                      placeholder="15"
-                      onFocusScrollToInput={scrollToInput}
-                    />
-                  </>
-                ) : null}
-
-                {local.payFrequency === "monthly" ? (
-                  <Field
-                    label="Monthly payday (1–28)"
-                    value={String(local.monthlyPayDay)}
-                    onChangeText={(s) => setLocal((p) => ({ ...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28) }))}
-                    keyboardType="numeric"
-                    placeholder="1"
-                    onFocusScrollToInput={scrollToInput}
-                  />
-                ) : null}
+                )}
+                
+                {/* Manual Payday Inputs for Monthly/Twice Monthly */}
+                {local.payFrequency === "twice_monthly" && (
+                   <>
+                     <Field label="Payday #1 (1-28)" value={String(local.twiceMonthlyDay1)} onChangeText={s => setLocal(p => ({...p, twiceMonthlyDay1: clamp(safeParseNumber(s), 1, 28)}))} keyboardType="numeric" />
+                     <Field label="Payday #2 (1-28)" value={String(local.twiceMonthlyDay2)} onChangeText={s => setLocal(p => ({...p, twiceMonthlyDay2: clamp(safeParseNumber(s), 1, 28)}))} keyboardType="numeric" />
+                   </>
+                )}
+                {local.payFrequency === "monthly" && (
+                   <Field label="Monthly Payday (1-28)" value={String(local.monthlyPayDay)} onChangeText={s => setLocal(p => ({...p, monthlyPayDay: clamp(safeParseNumber(s), 1, 28)}))} keyboardType="numeric" />
+                )}
               </Card>
 
-              {/* ✅ Expand / Collapse All (only affects the collapsible sections below) */}
-              <View style={{ flexDirection: "row", gap: 10, marginTop: 2 }}>
-                <View style={{ flex: 1 }}>
-                  <TextBtn label="Expand all" onPress={expandAll} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <TextBtn label="Collapse all" onPress={collapseAll} />
-                </View>
+              {/* Global Expand/Collapse */}
+              <View style={styles.row}>
+                <View style={{ flex: 1 }}><TextBtn label="Expand all" onPress={() => { setOpenTotals(true); setOpenDistributions(true); setOpenPersonalSpending(true); setOpenMonthlyExpenses(true); setOpenCreditCards(true); }} /></View>
+                <View style={{ flex: 1 }}><TextBtn label="Collapse all" onPress={() => { setOpenTotals(false); setOpenDistributions(false); setOpenPersonalSpending(false); setOpenMonthlyExpenses(false); setOpenCreditCards(false); }} /></View>
               </View>
 
-              {/* Totals */}
+              {/* Totals Section */}
               <Card>
-                <SectionHeader title="Totals" open={openTotals} onToggle={() => setOpenTotals((v) => !v)} />
-
-                {openTotals ? (
+                <SectionHeader title="Totals" open={openTotals} onToggle={() => setOpenTotals(!openTotals)} />
+                {openTotals && (
                   <>
-                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                      One total debt, auto-decreases when you check Debt Paydown.
-                    </Text>
-
+                    <Text style={styles.mutedText}>One total debt, auto-decreases when you check Debt Paydown.</Text>
                     <Divider />
-
                     <Field
                       label="Debt remaining"
                       value={String(local.debtRemaining)}
                       onChangeText={(s) => setLocal((p) => ({ ...p, debtRemaining: safeParseNumber(s) }))}
                       keyboardType="numeric"
-                      placeholder="0"
                       onFocusScrollToInput={scrollToInput}
                     />
                   </>
-                ) : null}
+                )}
               </Card>
 
-              {/* Paycheck Distributions */}
+              {/* Allocations Section */}
               <Card>
-                <SectionHeader
-                  title="Paycheck Distributions"
-                  open={openDistributions}
-                  onToggle={() => setOpenDistributions((v) => !v)}
-                />
-
-                {openDistributions ? (
+                <SectionHeader title="Paycheck Distributions" open={openDistributions} onToggle={() => setOpenDistributions(!openDistributions)} />
+                {openDistributions && (
                   <>
-                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                      Items that repeat every pay cycle (e.g., Savings, Investing).
-                    </Text>
-
+                    <Text style={styles.mutedText}>Savings, Investing, etc.</Text>
                     <Divider />
-
                     <View style={{ gap: 12 }}>
-                      {(local.allocations || []).map((a) => (
-                        <View
-                          key={a.id}
-                          style={{
-                            borderWidth: 1,
-                            borderColor: COLORS.borderSoft,
-                            borderRadius: 16,
-                            padding: 12,
-                            backgroundColor: "rgba(255,255,255,0.03)",
-                          }}
-                        >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Paycheck Distribution</Text>
-
-                          <Field
-                            label="Name"
-                            value={a.label}
-                            onChangeText={(s) => updateDistribution(a.id, { label: s })}
-                            placeholder="Savings"
-                            onFocusScrollToInput={scrollToInput}
-                          />
-                          <Field
-                            label="Amount"
-                            value={String(a.amount)}
-                            onChangeText={(s) => updateDistribution(a.id, { amount: safeParseNumber(s) })}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            onFocusScrollToInput={scrollToInput}
-                          />
-
-                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                            <TextBtn label="Remove distribution" onPress={() => removeDistribution(a.id)} kind="red" />
-                          </View>
-                        </View>
+                      {local.allocations?.map(a => (
+                        <EditableItem key={a.id} title="Distribution" onRemove={() => setLocal(s => ({...s, allocations: s.allocations?.filter(x => x.id !== a.id)}))}>
+                           <Field label="Name" value={a.label} onChangeText={s => setLocal(l => ({...l, allocations: l.allocations?.map(x => x.id === a.id ? {...x, label: s} : x)}))} onFocusScrollToInput={scrollToInput} />
+                           <Field label="Amount" value={String(a.amount)} onChangeText={s => setLocal(l => ({...l, allocations: l.allocations?.map(x => x.id === a.id ? {...x, amount: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                        </EditableItem>
                       ))}
-
-                      <TextBtn label="Add distribution" onPress={addDistribution} />
+                      <TextBtn label="Add distribution" onPress={() => setLocal(s => ({...s, allocations: [...(s.allocations||[]), {id: `alloc_${Date.now()}`, label: "", amount: 0}]}))} />
                     </View>
                   </>
-                ) : null}
+                )}
               </Card>
 
-              {/* Personal Spending */}
-              <Card>
-                <SectionHeader
-                  title="Personal Spending"
-                  open={openPersonalSpending}
-                  onToggle={() => setOpenPersonalSpending((v) => !v)}
-                />
-
-                {openPersonalSpending ? (
+               {/* Personal Spending Section */}
+               <Card>
+                <SectionHeader title="Personal Spending" open={openPersonalSpending} onToggle={() => setOpenPersonalSpending(!openPersonalSpending)} />
+                {openPersonalSpending && (
                   <>
-                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                      Personal “fun money” items that repeat every pay cycle.
-                    </Text>
-
+                    <Text style={styles.mutedText}>"Fun money" items.</Text>
                     <Divider />
-
                     <View style={{ gap: 12 }}>
-                      {(local.personalSpending || []).map((p) => (
-                        <View
-                          key={p.id}
-                          style={{
-                            borderWidth: 1,
-                            borderColor: COLORS.borderSoft,
-                            borderRadius: 16,
-                            padding: 12,
-                            backgroundColor: "rgba(255,255,255,0.03)",
-                          }}
-                        >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Personal Spending Item</Text>
-
-                          <Field
-                            label="Name"
-                            value={p.label}
-                            onChangeText={(s) => updatePersonalSpending(p.id, { label: s })}
-                            placeholder="Dining out"
-                            onFocusScrollToInput={scrollToInput}
-                          />
-                          <Field
-                            label="Amount"
-                            value={String(p.amount)}
-                            onChangeText={(s) => updatePersonalSpending(p.id, { amount: safeParseNumber(s) })}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            onFocusScrollToInput={scrollToInput}
-                          />
-
-                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                            <TextBtn label="Remove personal item" onPress={() => removePersonalSpending(p.id)} kind="red" />
-                          </View>
-                        </View>
+                      {local.personalSpending?.map(p => (
+                        <EditableItem key={p.id} title="Personal Spending Item" onRemove={() => setLocal(s => ({...s, personalSpending: s.personalSpending?.filter(x => x.id !== p.id)}))}>
+                           <Field label="Name" value={p.label} onChangeText={s => setLocal(l => ({...l, personalSpending: l.personalSpending?.map(x => x.id === p.id ? {...x, label: s} : x)}))} onFocusScrollToInput={scrollToInput} />
+                           <Field label="Amount" value={String(p.amount)} onChangeText={s => setLocal(l => ({...l, personalSpending: l.personalSpending?.map(x => x.id === p.id ? {...x, amount: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                        </EditableItem>
                       ))}
-
-                      <TextBtn label="Add personal spending" onPress={addPersonalSpending} />
+                      <TextBtn label="Add personal spending" onPress={() => setLocal(s => ({...s, personalSpending: [...(s.personalSpending||[]), {id: `ps_${Date.now()}`, label: "", amount: 0}]}))} />
                     </View>
                   </>
-                ) : null}
+                )}
               </Card>
 
-              {/* Monthly Expenses */}
+              {/* Monthly Expenses Section */}
               <Card>
-                <SectionHeader
-                  title="Monthly Expenses"
-                  open={openMonthlyExpenses}
-                  onToggle={() => setOpenMonthlyExpenses((v) => !v)}
-                />
-
-                {openMonthlyExpenses ? (
+                <SectionHeader title="Monthly Expenses" open={openMonthlyExpenses} onToggle={() => setOpenMonthlyExpenses(!openMonthlyExpenses)} />
+                {openMonthlyExpenses && (
                   <>
-                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                      Monthly items you want planned each month (e.g., Electricity, Internet, etc.).
-                    </Text>
-
+                    <Text style={styles.mutedText}>Planned items (Electricity, etc).</Text>
                     <Divider />
-
                     <View style={{ gap: 12 }}>
-                      {(local.monthlyItems || []).map((m) => {
-                        const dueText = monthlyDueText[m.id] ?? "";
-                        const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : m.dueDay;
-
-                        return (
-                          <View
-                            key={m.id}
-                            style={{
-                              borderWidth: 1,
-                              borderColor: COLORS.borderSoft,
-                              borderRadius: 16,
-                              padding: 12,
-                              backgroundColor: "rgba(255,255,255,0.03)",
-                            }}
-                          >
-                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
-
-                            <Field
-                              label="Name"
-                              value={m.label}
-                              onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                              placeholder="Electricity"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            <Field
-                              label="Amount"
-                              value={String(m.amount)}
-                              onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
-                              keyboardType="numeric"
-                              placeholder="0"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            {/* ✅ NEW: calendar dropdown (stores day-of-month only) */}
-                            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
-
-                            <Pressable
-                              onPress={() => setOpenMonthlyPickerId(m.id)}
-                              style={{
-                                marginTop: 6,
-                                borderWidth: 1,
-                                borderColor: COLORS.border,
-                                borderRadius: 14,
-                                paddingVertical: 12,
-                                paddingHorizontal: 12,
-                                backgroundColor: "rgba(255,255,255,0.05)",
+                      {local.monthlyItems?.map(m => (
+                        <EditableItem key={m.id} title="Monthly Expense" onRemove={() => {
+                           setLocal(s => ({...s, monthlyItems: s.monthlyItems?.filter(x => x.id !== m.id)}));
+                           const next = {...monthlyDueText}; delete next[m.id]; setMonthlyDueText(next);
+                        }}>
+                           <Field label="Name" value={m.label} onChangeText={s => setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, label: s} : x)}))} onFocusScrollToInput={scrollToInput} />
+                           <Field label="Amount" value={String(m.amount)} onChangeText={s => setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, amount: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                           
+                           <DayPicker 
+                              label="Due Date"
+                              valueDay={m.dueDay || 1}
+                              isOpen={openMonthlyPickerId === m.id}
+                              onToggle={() => setOpenMonthlyPickerId(curr => curr === m.id ? null : m.id)}
+                              onChange={(d) => {
+                                setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, dueDay: d} : x)}));
+                                setMonthlyDueText(map => ({...map, [m.id]: String(d)}));
+                                if (Platform.OS !== "ios") setOpenMonthlyPickerId(null);
                               }}
-                            >
-                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                Day {dueDay || 1} of the month
-                              </Text>
-                              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                                Tap to pick a date (we only store the day number)
-                              </Text>
-                            </Pressable>
-
-                            {openMonthlyPickerId === m.id ? (
-                              <DateTimePicker
-                                value={new Date()}
-                                mode="date"
-                                display={Platform.OS === "ios" ? "spinner" : "default"}
-                                onChange={(event, selectedDate) => {
-                                  if (Platform.OS !== "ios") setOpenMonthlyPickerId(null);
-                                  if (!selectedDate) return;
-                                  const day = selectedDate.getDate();
-                                  setMonthlyDueText((map) => ({ ...map, [m.id]: String(day) }));
-                                  updateMonthlyItem(m.id, { dueDay: day });
-                                }}
-                              />
-                            ) : null}
-
-                            {Platform.OS === "ios" && openMonthlyPickerId === m.id ? (
-                              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                                <TextBtn label="Done" onPress={() => setOpenMonthlyPickerId(null)} kind="green" />
-                              </View>
-                            ) : null}
-
-                            <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                              <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
-                            </View>
-                          </View>
-                        );
-                      })}
-
-                      <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
+                           />
+                        </EditableItem>
+                      ))}
+                      <TextBtn label="Add monthly expense" onPress={() => setLocal(s => ({...s, monthlyItems: [...(s.monthlyItems||[]), {id: `m_${Date.now()}`, label: "", amount: 0, dueDay: 1}]}))} />
                     </View>
                   </>
-                ) : null}
+                )}
               </Card>
 
-              {/* Credit Cards */}
+              {/* Credit Cards Section */}
               <Card>
-                <SectionHeader
-                  title="Credit Cards"
-                  open={openCreditCards}
-                  onToggle={() => setOpenCreditCards((v) => !v)}
-                />
-
-                {openCreditCards ? (
+                <SectionHeader title="Credit Cards" open={openCreditCards} onToggle={() => setOpenCreditCards(!openCreditCards)} />
+                {openCreditCards && (
                   <>
-                    <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                      Enter each card’s balance (debt remaining), minimum due, and due date. Paid-off cards (balance 0) will
-                      be hidden from the Dashboard.
-                    </Text>
-
+                    <Text style={styles.mutedText}>Track balances and minimum dues.</Text>
                     <Divider />
-
                     <View style={{ gap: 12 }}>
-                      {(local.creditCards || []).map((c) => {
-                        const dueText = cardDueText[c.id] ?? "";
-                        const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : c.dueDay;
-
-                        const balText = cardBalanceText[c.id] ?? String(c.balance ?? "");
-
-                        return (
-                          <View
-                            key={c.id}
-                            style={{
-                              borderWidth: 1,
-                              borderColor: COLORS.borderSoft,
-                              borderRadius: 16,
-                              padding: 12,
-                              backgroundColor: "rgba(255,255,255,0.03)",
-                            }}
-                          >
-                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Credit Card</Text>
-
-                            <Field
-                              label="Name"
-                              value={c.name}
-                              onChangeText={(s) => updateCard(c.id, { name: s })}
-                              placeholder="Chase Freedom"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            <Field
-                              label="Balance (debt remaining)"
-                              value={balText}
-                              onChangeText={(s) => setCardBalanceText((map) => ({ ...map, [c.id]: keepMoneyChars(s) }))}
-                              keyboardType="numeric"
-                              placeholder="0"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            <Field
-                              label="Total Amount Due (statement)"
-                              value={String(c.totalDue)}
-                              onChangeText={(s) => updateCard(c.id, { totalDue: safeParseNumber(s) })}
-                              keyboardType="numeric"
-                              placeholder="0"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            <Field
-                              label="Minimum Due"
-                              value={String(c.minDue)}
-                              onChangeText={(s) => updateCard(c.id, { minDue: safeParseNumber(s) })}
-                              keyboardType="numeric"
-                              placeholder="0"
-                              onFocusScrollToInput={scrollToInput}
-                            />
-
-                            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
-
-                            <Pressable
-                              onPress={() => setOpenCardPickerId(c.id)}
-                              style={{
-                                marginTop: 6,
-                                borderWidth: 1,
-                                borderColor: COLORS.border,
-                                borderRadius: 14,
-                                paddingVertical: 12,
-                                paddingHorizontal: 12,
-                                backgroundColor: "rgba(255,255,255,0.05)",
+                      {local.creditCards?.map(c => (
+                        <EditableItem key={c.id} title="Credit Card" onRemove={() => {
+                          setLocal(s => ({...s, creditCards: s.creditCards?.filter(x => x.id !== c.id)}));
+                          const n1 = {...cardDueText}; delete n1[c.id]; setCardDueText(n1);
+                          const n2 = {...cardBalanceText}; delete n2[c.id]; setCardBalanceText(n2);
+                        }}>
+                           <Field label="Name" value={c.name} onChangeText={s => setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, name: s} : x)}))} onFocusScrollToInput={scrollToInput} />
+                           
+                           {/* Using local text buffers for financial inputs to allow easier editing */}
+                           <Field label="Balance" value={cardBalanceText[c.id] ?? ""} onChangeText={s => setCardBalanceText(m => ({...m, [c.id]: keepMoneyChars(s)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                           <Field label="Total Due" value={String(c.totalDue)} onChangeText={s => setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, totalDue: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                           <Field label="Min Due" value={String(c.minDue)} onChangeText={s => setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, minDue: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
+                           
+                           <DayPicker 
+                              label="Due Date"
+                              valueDay={c.dueDay || 1}
+                              isOpen={openCardPickerId === c.id}
+                              onToggle={() => setOpenCardPickerId(curr => curr === c.id ? null : c.id)}
+                              onChange={(d) => {
+                                setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, dueDay: d} : x)}));
+                                setCardDueText(map => ({...map, [c.id]: String(d)}));
+                                if (Platform.OS !== "ios") setOpenCardPickerId(null);
                               }}
-                            >
-                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Day {dueDay} of the month</Text>
-                              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
-                                Tap to pick a date (we only store the day number)
-                              </Text>
-                            </Pressable>
-
-                            {openCardPickerId === c.id ? (
-                              <DateTimePicker
-                                value={new Date()}
-                                mode="date"
-                                display={Platform.OS === "ios" ? "spinner" : "default"}
-                                onChange={(event, selectedDate) => {
-                                  if (Platform.OS !== "ios") setOpenCardPickerId(null);
-                                  if (!selectedDate) return;
-                                  const day = selectedDate.getDate();
-                                  setCardDueText((map) => ({ ...map, [c.id]: String(day) }));
-                                  updateCard(c.id, { dueDay: day });
-                                }}
-                              />
-                            ) : null}
-
-                            {Platform.OS === "ios" && openCardPickerId === c.id ? (
-                              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                                <TextBtn label="Done" onPress={() => setOpenCardPickerId(null)} kind="green" />
-                              </View>
-                            ) : null}
-
-                            <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                              <TextBtn label="Remove card" onPress={() => removeCard(c.id)} kind="red" />
-                            </View>
-                          </View>
-                        );
-                      })}
-
-                      <TextBtn label="Add credit card" onPress={addCard} />
+                           />
+                        </EditableItem>
+                      ))}
+                      <TextBtn label="Add credit card" onPress={() => setLocal(s => ({...s, creditCards: [...(s.creditCards||[]), {id: `cc_${Date.now()}`, name: "", balance: 0, totalDue: 0, minDue: 0, dueDay: 1}]}))} />
                     </View>
                   </>
-                ) : null}
+                )}
               </Card>
 
-              {/* Actions */}
-              <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
-                <View style={{ flex: 1 }}>
-                  <TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <TextBtn label="Reset ALL (start over)" onPress={confirmResetAll} kind="red" />
-                </View>
+              {/* Action Buttons */}
+              <View style={styles.row}>
+                 <View style={{ flex: 1 }}><TextBtn label={mode === "setup" ? "Finish setup" : "Save settings"} onPress={save} kind="green" /></View>
+                 <View style={{ flex: 1 }}><TextBtn label="Reset ALL" onPress={() => {
+                    Alert.alert("Reset ALL", "Clears all data. Continue?", [{text:"Cancel"}, {text:"Reset", style:"destructive", onPress: async()=>{ await resetEverything(); Alert.alert("Reset", "Data cleared."); }}])
+                 }} kind="red" /></View>
               </View>
+              
+              <Text style={styles.footerText}>Offline • Saved on-device</Text>
 
-              <Text style={{ color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" }}>
-                Offline • Saved on-device
-              </Text>
             </View>
           </ScrollView>
         </View>
@@ -945,3 +525,45 @@ export default function SettingsScreen() {
     </SafeAreaView>
   );
 }
+
+const LoadingScreen = () => (
+  <SafeAreaView style={styles.fullScreen} edges={["top", "left", "right"]}>
+    <View style={styles.center}><Text style={styles.textStrong}>Loading…</Text></View>
+  </SafeAreaView>
+);
+
+const styles = StyleSheet.create({
+  fullScreen: { flex: 1, backgroundColor: COLORS.bg },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  container: { flex: 1, paddingHorizontal: 16, paddingTop: 10, backgroundColor: COLORS.bg },
+  h2: { color: COLORS.textStrong, ...TYPE.h2 },
+  mutedText: { color: COLORS.muted, marginTop: 6, fontWeight: "700" },
+  label: { color: COLORS.muted, ...TYPE.label, marginTop: 10 },
+  textStrong: { color: COLORS.textStrong, fontWeight: "900" },
+  faintText: { color: COLORS.faint, marginTop: 4, fontWeight: "700" },
+  footerText: { color: COLORS.faint, marginTop: 10, textAlign: "center", fontWeight: "700" },
+  
+  row: { flexDirection: "row", gap: 10, marginTop: 4 },
+  rowWrap: { flexDirection: "row", gap: 10, flexWrap: "wrap" },
+  
+  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 10 },
+  arrow: { color: COLORS.textStrong, fontWeight: "900", fontSize: 18 },
+  
+  pickerButton: {
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  
+  editableItem: {
+    borderWidth: 1,
+    borderColor: COLORS.borderSoft,
+    borderRadius: 16,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  }
+});
