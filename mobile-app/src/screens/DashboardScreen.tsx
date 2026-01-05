@@ -14,24 +14,24 @@ import {
   findNodeHandle,
   LayoutAnimation,
   UIManager,
+  StyleSheet,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
-
-// ✅ usePayflow comes from Provider (shared state across screens)
 import { usePayflow } from "@/src/state/PayFlowProvider";
-
-// ✅ helpers + types stay from usePayflow.ts
 import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
-
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-function ListRow({
+// --- Helper Components ---
+
+// ✅ IMPROVEMENT 1: React.memo
+// This prevents the row from re-rendering if its specific data hasn't changed.
+const ListRow = React.memo(function ListRow({
   title,
   subtitle,
   amount,
@@ -47,47 +47,102 @@ function ListRow({
   return (
     <Pressable
       onPress={onPress}
-      style={{
-        paddingVertical: 12,
-        paddingHorizontal: 12,
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.09)",
-        backgroundColor: checked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
-      }}
+      style={[
+        styles.listRow,
+        {
+          backgroundColor: checked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
+        },
+      ]}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <View style={styles.listRowContent}>
         <View
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: checked ? "rgba(34,197,94,0.70)" : "rgba(255,255,255,0.20)",
-            backgroundColor: checked ? "rgba(34,197,94,0.20)" : "transparent",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
+          style={[
+            styles.checkbox,
+            {
+              borderColor: checked ? "rgba(34,197,94,0.70)" : "rgba(255,255,255,0.20)",
+              backgroundColor: checked ? "rgba(34,197,94,0.20)" : "transparent",
+            },
+          ]}
         >
-          <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>
-            {checked ? "✓" : ""}
-          </Text>
+          <Text style={styles.checkboxText}>{checked ? "✓" : ""}</Text>
         </View>
 
         <View style={{ flex: 1 }}>
-          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{title}</Text>
+          <Text style={styles.textStrong}>{title}</Text>
           {subtitle ? (
-            <Text style={{ color: COLORS.muted, marginTop: 3, fontWeight: "700", fontSize: 12 }}>
-              {subtitle}
-            </Text>
+            <Text style={styles.listSubtitle}>{subtitle}</Text>
           ) : null}
         </View>
 
         <View style={{ alignItems: "flex-end" }}>
-          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{amount}</Text>
+          <Text style={styles.textStrong}>{amount}</Text>
         </View>
       </View>
     </Pressable>
+  );
+});
+
+// ✅ IMPROVEMENT 2: Visual Progress Bar Component
+function ProgressBar({ current, total, pct }: { current: number; total: number; pct: number }) {
+  return (
+    <View style={{ marginTop: 4 }}>
+      <View style={styles.progressRow}>
+        <Text style={[styles.body, { color: COLORS.muted, fontSize: 13 }]}>
+          Progress
+        </Text>
+        <Text style={[styles.textStrong, { fontSize: 13 }]}>
+          {current}/{total} ({pct}%)
+        </Text>
+      </View>
+      <View style={styles.track}>
+        <View style={[styles.fill, { width: `${pct}%` }]} />
+      </View>
+    </View>
+  );
+}
+
+// ✅ IMPROVEMENT 3: Extracted Cycle Header
+// Keeps the main component cleaner
+function CycleHeader({ 
+  cycleOffset, 
+  payday, 
+  onPrev, 
+  onNext, 
+  onReset 
+}: { 
+  cycleOffset: number; 
+  payday: string; 
+  onPrev: () => void; 
+  onNext: () => void; 
+  onReset: () => void; 
+}) {
+  return (
+    <Card>
+      <View style={{ gap: 10 }}>
+        <View style={styles.row}>
+          <TextBtn label="◀︎" onPress={onPrev} />
+          <View style={{ alignItems: "center", flex: 1 }}>
+            <Text style={styles.textStrong}>
+              {cycleOffset === 0
+                ? "This paycheck"
+                : cycleOffset > 0
+                ? `Next +${cycleOffset}`
+                : `Prev ${cycleOffset}`}
+            </Text>
+            <Text style={styles.cycleDate}>
+              Payday {formatDate(payday)}
+            </Text>
+          </View>
+          <TextBtn label="▶︎" onPress={onNext} />
+        </View>
+
+        {cycleOffset !== 0 ? (
+          <View style={{ marginTop: 10, alignItems: "center" }}>
+            <TextBtn label="Back to current" onPress={onReset} kind="green" />
+          </View>
+        ) : null}
+      </View>
+    </Card>
   );
 }
 
@@ -112,44 +167,18 @@ function BottomSheet({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.55)" }} />
+      <Pressable onPress={onClose} style={styles.modalOverlay} />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={keyboardOffset}
-        style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
+        style={styles.modalKeyboardContainer}
       >
-        <View
-          style={{
-            borderTopLeftRadius: 22,
-            borderTopRightRadius: 22,
-            borderWidth: 1,
-            borderColor: COLORS.border,
-            backgroundColor: COLORS.bg,
-            maxHeight: "88%",
-            paddingBottom: 12 + bottomInset + extraBottom,
-          }}
-        >
-          <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
-            <View
-              style={{
-                alignSelf: "center",
-                width: 44,
-                height: 5,
-                borderRadius: 999,
-                backgroundColor: "rgba(255,255,255,0.18)",
-                marginBottom: 10,
-              }}
-            />
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{title}</Text>
+        <View style={[styles.modalContent, { paddingBottom: 12 + bottomInset + extraBottom }]}>
+          <View style={styles.modalHeader}>
+            <View style={styles.modalHandle} />
+            <View style={styles.modalTitleRow}>
+              <Text style={styles.h2}>{title}</Text>
               <TextBtn label="Close" onPress={onClose} />
             </View>
           </View>
@@ -168,6 +197,23 @@ function BottomSheet({
   );
 }
 
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.label}>{label}</Text>
+      <Chip>{value}</Chip>
+    </View>
+  );
+}
+
+const CompletedTab = () => (
+  <View style={styles.completedTab}>
+    <Text style={styles.completedTabText}>Completed</Text>
+  </View>
+);
+
+// --- Main Screen ---
+
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const keyboardHeight = useKeyboardHeight();
@@ -176,7 +222,6 @@ export default function DashboardScreen() {
     loaded,
     hasCompletedSetup,
     setHasCompletedSetup,
-
     settings,
     cycleOffset,
     setCycleOffset,
@@ -184,17 +229,12 @@ export default function DashboardScreen() {
     grouped,
     activeChecked,
     totals,
-
     toggleItem,
-
     unexpected,
     unexpectedTotal,
     addUnexpected,
     removeUnexpected,
-
     personalSpendingTotal,
-
-    // manual payments
     payments,
     manualPaymentsTotal,
     addCardPayment,
@@ -202,8 +242,8 @@ export default function DashboardScreen() {
   } = usePayflow();
 
   const keyboardOffset = Math.max(0, insets.top + 24);
-
   const scrollRef = useRef<ScrollView>(null);
+
   const scrollToInput = (inputRef: React.RefObject<TextInput>) => {
     setTimeout(() => {
       const node = findNodeHandle(inputRef.current);
@@ -213,47 +253,35 @@ export default function DashboardScreen() {
     }, 40);
   };
 
-  // bottom sheet for unexpected
+  // UI State
   const [sheetOpen, setSheetOpen] = useState(false);
   const [uxLabel, setUxLabel] = useState("");
   const [uxAmount, setUxAmount] = useState("");
-  const [uxCardId, setUxCardId] = useState<string>(""); // "" = Cash/Debit, else cardId
-
-  // manual payment UI
+  const [uxCardId, setUxCardId] = useState<string>(""); 
   const [payCardId, setPayCardId] = useState<string>("");
   const [payAmount, setPayAmount] = useState("");
-
-  // collapsed by default (payments)
   const [paymentsCollapsed, setPaymentsCollapsed] = useState(true);
-
-  // ✅ NEW: collapsed by default (summary)
   const [summaryCollapsed, setSummaryCollapsed] = useState(true);
 
+  // Logic: Cards
   const payableCards: CreditCard[] = useMemo(
     () => (settings.creditCards || []).filter((c) => (c.balance || 0) > 0),
     [settings.creditCards]
   );
 
-  // total credit card debt for Summary
   const creditCardDebtTotal = useMemo(
     () => (settings.creditCards || []).reduce((sum, c) => sum + (c.balance || 0), 0),
     [settings.creditCards]
   );
 
-  // default selected card for payments
   React.useEffect(() => {
     if (!payCardId && payableCards.length > 0) setPayCardId(payableCards[0].id);
   }, [payCardId, payableCards]);
 
-  /* ---------------- NEW: auto-collapse + completed tab for each checklist category ---------------- */
-
-  // open/closed per category key (defaults to OPEN to preserve your current behavior)
+  // Logic: Auto-collapse categories
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
-
-  // user override: if complete and user expands, don't immediately auto-collapse again
   const [catUserOpenedWhileComplete, setCatUserOpenedWhileComplete] = useState<Record<string, boolean>>({});
 
-  // derived completion per category (from checked state)
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
     for (const [cat, catItems] of grouped) {
@@ -265,117 +293,71 @@ export default function DashboardScreen() {
 
   const prevCatCompleteRef = useRef<Record<string, boolean>>({});
 
-  // ensure categories exist + auto-collapse / auto-open transitions
   React.useEffect(() => {
-    // smooth collapse/expand (doesn't change your logic)
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 
-    // 1) ensure defaults exist
     setCatOpen((prev) => {
       const next = { ...prev };
       for (const [cat] of grouped) {
         const key = String(cat);
-        if (typeof next[key] !== "boolean") next[key] = true; // default OPEN
+        if (typeof next[key] !== "boolean") next[key] = true;
       }
-      return next;
-    });
-
-    // 2) transitions
-    const prevMap = prevCatCompleteRef.current || {};
-
-    setCatOpen((prev) => {
-      const next = { ...prev };
-
+      const prevMap = prevCatCompleteRef.current || {};
       for (const [cat] of grouped) {
         const key = String(cat);
-
         const was = !!prevMap[key];
         const now = !!catComplete[key];
         const override = !!catUserOpenedWhileComplete[key];
 
-        // incomplete -> complete: auto-collapse unless user forced open
-        if (!was && now) {
-          if (!override) next[key] = false;
-        }
-
-        // complete -> incomplete: auto-open and clear override behavior
-        if (was && !now) {
-          next[key] = true;
-        }
-
-        // if currently complete and not overridden, keep collapsed
-        if (now && !override) {
-          next[key] = false;
-        }
+        if (!was && now && !override) next[key] = false;
+        if (was && !now) next[key] = true;
+        if (now && !override) next[key] = false;
       }
-
       return next;
     });
 
     setCatUserOpenedWhileComplete((prev) => {
       const next = { ...prev };
+      const prevMap = prevCatCompleteRef.current || {};
       for (const [cat] of grouped) {
         const key = String(cat);
         const was = !!prevMap[key];
         const now = !!catComplete[key];
-        if (was && !now) next[key] = false; // clear override when it becomes incomplete
+        if (was && !now) next[key] = false;
       }
       return next;
     });
 
-    // update prev map AFTER applying transitions
     prevCatCompleteRef.current = { ...catComplete };
   }, [grouped, catComplete, catUserOpenedWhileComplete]);
 
   const toggleCategoryOpen = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-
     setCatOpen((prev) => {
       const curr = typeof prev[key] === "boolean" ? prev[key] : true;
       const nextOpen = !curr;
-
-      // if complete and user opens, mark override so we don't auto-close immediately
       if (catComplete[key] && nextOpen) {
         setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: true }));
       }
-
-      // if they collapse while complete, remove override
       if (catComplete[key] && !nextOpen) {
         setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: false }));
       }
-
       return { ...prev, [key]: nextOpen };
     });
   };
-
-  const CompletedTab = () => (
-    <View
-      style={{
-        paddingVertical: 6,
-        paddingHorizontal: 10,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: "rgba(34,197,94,0.40)",
-        backgroundColor: "rgba(34,197,94,0.14)",
-      }}
-    >
-      <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>Completed</Text>
-    </View>
-  );
 
   const hasCreditCardsCategory = useMemo(
     () => grouped.some(([cat]) => String(cat) === "Credit Cards"),
     [grouped]
   );
 
-  /* ---------------------------------------------------------------------------------------------- */
+  // --- Rendering ---
 
   if (!loaded) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
-        <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Loading…</Text>
+      <SafeAreaView style={styles.fullScreen} edges={["top", "left", "right"]}>
+        <View style={styles.center}>
+          <Text style={styles.textStrong}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
@@ -383,17 +365,15 @@ export default function DashboardScreen() {
 
   if (!hasCompletedSetup) {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+      <SafeAreaView style={styles.fullScreen} edges={["top", "left", "right"]}>
         <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
-        <View style={{ flex: 1, padding: 16, paddingTop: 10 }}>
+        <View style={styles.welcomeContainer}>
           <Card>
-            <Text style={{ color: COLORS.textStrong, ...TYPE.h1 }}>Welcome</Text>
-            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-              Go to <Text style={{ color: COLORS.textStrong }}>Settings</Text> to complete setup.
+            <Text style={styles.h1}>Welcome</Text>
+            <Text style={[styles.mutedText, { marginTop: 6 }]}>
+              Go to <Text style={styles.textStrong}>Settings</Text> to complete setup.
             </Text>
-
             <Divider />
-
             <TextBtn label="Mark setup complete (dev)" kind="green" onPress={() => setHasCompletedSetup(true)} />
           </Card>
         </View>
@@ -402,7 +382,7 @@ export default function DashboardScreen() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: COLORS.bg }} edges={["top", "left", "right"]}>
+    <SafeAreaView style={styles.fullScreen} edges={["top", "left", "right"]}>
       <StatusBar translucent backgroundColor="transparent" barStyle="light-content" />
 
       <KeyboardAvoidingView
@@ -410,73 +390,41 @@ export default function DashboardScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={keyboardOffset}
       >
-        <View
-          style={{
-            flex: 1,
-            paddingHorizontal: 16,
-            paddingTop: 10,
-            paddingBottom: 14 + insets.bottom,
-            backgroundColor: COLORS.bg,
-          }}
-        >
+        <View style={[styles.mainContainer, { paddingBottom: 14 + insets.bottom }]}>
           <ScrollView
             ref={scrollRef}
             style={{ marginTop: 0 }}
             keyboardShouldPersistTaps="handled"
-            contentContainerStyle={{
-              paddingTop: 2,
-              paddingBottom: 260 + keyboardHeight,
-            }}
+            contentContainerStyle={{ paddingTop: 2, paddingBottom: 260 + keyboardHeight }}
             showsVerticalScrollIndicator={false}
           >
-            {/* Cycle header */}
-            <Card>
-              <View style={{ gap: 10 }}>
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                  <TextBtn label="◀︎" onPress={() => setCycleOffset((o) => o - 1)} />
-                  <View style={{ alignItems: "center", flex: 1 }}>
-                    <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                      {cycleOffset === 0
-                        ? "This paycheck"
-                        : cycleOffset > 0
-                        ? `Next +${cycleOffset}`
-                        : `Prev ${cycleOffset}`}
-                    </Text>
-                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" }}>
-                      Payday {formatDate(viewCycle.payday)}
-                    </Text>
-                  </View>
-                  <TextBtn label="▶︎" onPress={() => setCycleOffset((o) => o + 1)} />
-                </View>
+            {/* Extracted Cycle Header */}
+            <CycleHeader 
+              cycleOffset={cycleOffset}
+              payday={viewCycle.payday}
+              onPrev={() => setCycleOffset((o) => o - 1)}
+              onNext={() => setCycleOffset((o) => o + 1)}
+              onReset={() => setCycleOffset(0)}
+            />
 
-                {cycleOffset !== 0 ? (
-                  <View style={{ marginTop: 10, alignItems: "center" }}>
-                    <TextBtn label="Back to current" onPress={() => setCycleOffset(0)} kind="green" />
-                  </View>
-                ) : null}
-              </View>
-            </Card>
-
-            {/* ✅ Summary (collapsible) */}
+            {/* Summary */}
             <View style={{ marginTop: 12 }}>
               <Card>
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                  <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Summary</Text>
+                <View style={[styles.row, { gap: 10 }]}>
+                  <Text style={styles.h2}>Summary</Text>
                   <TextBtn label={summaryCollapsed ? "Show" : "Hide"} onPress={() => setSummaryCollapsed((v) => !v)} />
                 </View>
 
                 <Divider />
 
-                {/* Always visible */}
-                <Text style={{ color: COLORS.muted, ...TYPE.body }}>
-                  Progress:{" "}
-                  <Text style={{ color: COLORS.textStrong }}>
-                    {totals.itemsDone}/{totals.itemsTotal} ({totals.pct}%)
-                  </Text>
-                </Text>
+                {/* VISUAL PROGRESS BAR HERE */}
+                <ProgressBar 
+                  current={totals.itemsDone} 
+                  total={totals.itemsTotal} 
+                  pct={totals.pct} 
+                />
 
-                {/* Expanded content */}
-                {summaryCollapsed ? null : (
+                {!summaryCollapsed && (
                   <>
                     <Divider />
                     <View style={{ gap: 10 }}>
@@ -484,8 +432,8 @@ export default function DashboardScreen() {
                       <Row label="Credit Card Debt" value={fmtMoney(creditCardDebtTotal)} />
                       <Row label="Personal spending (per pay)" value={fmtMoney(personalSpendingTotal)} />
                       <Row label="Debt remaining (other)" value={fmtMoney(settings.debtRemaining)} />
-                      <Row label="Manual card payments (this cycle)" value={fmtMoney(manualPaymentsTotal)} />
-                      <Row label="Unexpected (this cycle)" value={fmtMoney(unexpectedTotal)} />
+                      <Row label="Manual card payments" value={fmtMoney(manualPaymentsTotal)} />
+                      <Row label="Unexpected" value={fmtMoney(unexpectedTotal)} />
                       <Row label="Planned" value={fmtMoney(totals.planned)} />
                       <Row label="Completed" value={fmtMoney(totals.done)} />
                     </View>
@@ -499,7 +447,6 @@ export default function DashboardScreen() {
               {grouped.map(([cat, catItems]) => {
                 const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
                 const label = displayCategory(cat as any);
-
                 const catKey = String(cat);
                 const isComplete = !!catComplete[catKey];
                 const isOpen = typeof catOpen[catKey] === "boolean" ? catOpen[catKey] : true;
@@ -507,46 +454,35 @@ export default function DashboardScreen() {
                 return (
                   <React.Fragment key={String(cat)}>
                     <Card>
-                      {/* ✅ tappable header + completed tab */}
                       <Pressable
                         onPress={() => toggleCategoryOpen(catKey)}
-                        style={{
-                          flexDirection: "row",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 10,
-                          paddingVertical: 6,
-                          paddingHorizontal: 8,
-                          marginHorizontal: -8,
-                          borderRadius: 16,
-                          backgroundColor: isComplete && !isOpen ? "rgba(34,197,94,0.12)" : "transparent",
-                        }}
+                        style={[
+                          styles.catHeader,
+                          { backgroundColor: isComplete && !isOpen ? "rgba(34,197,94,0.12)" : "transparent" }
+                        ]}
                       >
                         <View style={{ flex: 1 }}>
-                          <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>{label}</Text>
+                          <Text style={styles.h2}>{label}</Text>
                         </View>
-
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                           {isComplete ? <CompletedTab /> : null}
                           <Chip>{fmtMoney(plannedForCat)} planned</Chip>
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{isOpen ? "▾" : "▸"}</Text>
+                          <Text style={styles.textStrong}>{isOpen ? "▾" : "▸"}</Text>
                         </View>
                       </Pressable>
 
-                      {/* only show divider + list when open */}
                       {isOpen ? (
                         <>
                           <Divider />
-
                           <View style={{ gap: 10 }}>
                             {catItems.map((it) => {
                               const state = activeChecked[it.id];
                               const isChecked = !!state?.checked;
-
+                              
+                              // Logic for subtitle
                               const subtitleParts: string[] = [];
                               if (it.notes) subtitleParts.push(it.notes);
                               if (isChecked && state?.at) subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
-
                               const subtitle = subtitleParts.filter(Boolean).join(" • ");
 
                               return (
@@ -565,7 +501,7 @@ export default function DashboardScreen() {
                       ) : (
                         <>
                           <Divider />
-                          <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                          <Text style={styles.mutedText}>
                             {isComplete ? "All items completed. Tap to expand." : "Tap to expand."}
                           </Text>
                         </>
@@ -576,55 +512,42 @@ export default function DashboardScreen() {
               })}
             </View>
 
-            {/* ✅ MOVED: Credit Card Payments (now near the bottom, above Unexpected) */}
+            {/* Credit Card Payments */}
             {hasCreditCardsCategory ? (
               <View style={{ marginTop: 12 }}>
                 <Card>
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 10,
-                    }}
-                  >
+                  <View style={[styles.row, { gap: 10 }]}>
                     <View style={{ flex: 1 }}>
-                      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
-                      <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                        Extra payments you made (reduces remainder + lowers the card balance).
+                      <Text style={styles.h2}>Credit Card Payments</Text>
+                      <Text style={[styles.mutedText, { marginTop: 6 }]}>
+                        Extra payments you made.
                       </Text>
                     </View>
-
                     <TextBtn label={paymentsCollapsed ? "Show" : "Hide"} onPress={() => setPaymentsCollapsed((v) => !v)} />
                   </View>
 
-                  {paymentsCollapsed ? null : (
+                  {!paymentsCollapsed && (
                     <>
                       <Divider />
-
                       {payableCards.length === 0 ? (
-                        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                          No active card balances. Paid-off cards are hidden automatically.
-                        </Text>
+                        <Text style={styles.mutedText}>No active card balances.</Text>
                       ) : (
                         <>
-                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
-
-                          <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                          <Text style={styles.label}>Select card</Text>
+                          <View style={styles.chipRow}>
                             {payableCards.map((c) => (
                               <Pressable
                                 key={c.id}
                                 onPress={() => setPayCardId(c.id)}
-                                style={{
-                                  paddingVertical: 8,
-                                  paddingHorizontal: 10,
-                                  borderRadius: 999,
-                                  borderWidth: 1,
-                                  borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                                  backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                                }}
+                                style={[
+                                  styles.selectionChip,
+                                  {
+                                    borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                                    backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                                  }
+                                ]}
                               >
-                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                <Text style={styles.textStrong}>
                                   {c.name || "Card"} • {fmtMoney(c.balance || 0)}
                                 </Text>
                               </Pressable>
@@ -641,7 +564,7 @@ export default function DashboardScreen() {
                             clearOnFocus
                           />
 
-                          <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                          <View style={styles.actionRow}>
                             <TextBtn
                               label="Add payment"
                               kind="green"
@@ -658,40 +581,25 @@ export default function DashboardScreen() {
                         </>
                       )}
 
-                      {payments.length > 0 ? (
+                      {payments.length > 0 && (
                         <>
                           <Divider />
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
+                          <Text style={styles.textStrong}>This cycle payments</Text>
                           <View style={{ marginTop: 10, gap: 10 }}>
                             {payments.map((p) => {
                               const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
                               return (
-                                <View
-                                  key={p.id}
-                                  style={{
-                                    padding: 12,
-                                    borderRadius: 16,
-                                    borderWidth: 1,
-                                    borderColor: "rgba(255,255,255,0.09)",
-                                    backgroundColor: "rgba(255,255,255,0.03)",
-                                  }}
-                                >
-                                  <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                <View key={p.id} style={styles.listItemBox}>
+                                  <View style={[styles.row, { gap: 10 }]}>
                                     <View style={{ flex: 1 }}>
-                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                        {card?.name || "Credit Card"}
-                                      </Text>
-                                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                      <Text style={styles.textStrong}>{card?.name || "Credit Card"}</Text>
+                                      <Text style={[styles.mutedText, { marginTop: 4 }]}>
                                         {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
                                       </Text>
                                     </View>
                                     <View style={{ alignItems: "flex-end", gap: 8 }}>
                                       <Chip>{fmtMoney(p.amount)}</Chip>
-                                      <TextBtn
-                                        label="Remove"
-                                        kind="red"
-                                        onPress={() => removeCardPayment(viewCycle.id, p.id)}
-                                      />
+                                      <TextBtn label="Remove" kind="red" onPress={() => removeCardPayment(viewCycle.id, p.id)} />
                                     </View>
                                   </View>
                                 </View>
@@ -699,7 +607,7 @@ export default function DashboardScreen() {
                             })}
                           </View>
                         </>
-                      ) : null}
+                      )}
                     </>
                   )}
                 </Card>
@@ -709,11 +617,11 @@ export default function DashboardScreen() {
             {/* Unexpected */}
             <View style={{ marginTop: 12 }}>
               <Card>
-                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <View style={[styles.row, { gap: 10 }]}>
                   <View style={{ flex: 1 }}>
-                    <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Unexpected (this cycle)</Text>
-                    <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                      Total: <Text style={{ color: COLORS.textStrong }}>{fmtMoney(unexpectedTotal)}</Text>
+                    <Text style={styles.h2}>Unexpected (this cycle)</Text>
+                    <Text style={[styles.mutedText, { marginTop: 4 }]}>
+                      Total: <Text style={styles.textStrong}>{fmtMoney(unexpectedTotal)}</Text>
                     </Text>
                   </View>
                   <TextBtn label="Add" kind="green" onPress={() => setSheetOpen(true)} />
@@ -724,35 +632,20 @@ export default function DashboardScreen() {
                     <Divider />
                     <View style={{ gap: 10 }}>
                       {unexpected.map((x) => {
-                        // @ts-ignore (x.cardId exists once you updated the type)
                         const cardName = x.cardId ? (settings.creditCards || []).find((c) => c.id === x.cardId)?.name : null;
-
                         return (
-                          <View
-                            key={x.id}
-                            style={{
-                              padding: 12,
-                              borderRadius: 16,
-                              borderWidth: 1,
-                              borderColor: "rgba(255,255,255,0.09)",
-                              backgroundColor: "rgba(255,255,255,0.03)",
-                            }}
-                          >
-                            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                          <View key={x.id} style={styles.listItemBox}>
+                            <View style={[styles.row, { gap: 10 }]}>
                               <View style={{ flex: 1 }}>
-                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{x.label}</Text>
-                                <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                <Text style={styles.textStrong}>{x.label}</Text>
+                                <Text style={[styles.mutedText, { marginTop: 4 }]}>
                                   {fmtMoney(x.amount)} • {new Date(x.atISO).toLocaleString()}
                                   {cardName ? ` • ${cardName}` : ""}
                                 </Text>
                               </View>
                               <View style={{ alignItems: "flex-end", gap: 8 }}>
                                 <Chip>{fmtMoney(x.amount)}</Chip>
-                                <TextBtn
-                                  label="Remove"
-                                  kind="red"
-                                  onPress={() => removeUnexpected(viewCycle.id, x.id)}
-                                />
+                                <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
                               </View>
                             </View>
                           </View>
@@ -763,18 +656,16 @@ export default function DashboardScreen() {
                 ) : (
                   <>
                     <Divider />
-                    <Text style={{ color: COLORS.muted, fontWeight: "700" }}>None yet. Tap “Add” to record one.</Text>
+                    <Text style={styles.mutedText}>None yet. Tap “Add” to record one.</Text>
                   </>
                 )}
               </Card>
             </View>
 
-            <Text style={{ color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" }}>
-              Offline • Saved on-device
-            </Text>
+            <Text style={styles.footerText}>Offline • Saved on-device</Text>
           </ScrollView>
 
-          {/* Add unexpected bottom sheet */}
+          {/* Bottom Sheet for Adding Unexpected */}
           <BottomSheet
             visible={sheetOpen}
             onClose={() => {
@@ -786,7 +677,7 @@ export default function DashboardScreen() {
             keyboardHeight={keyboardHeight}
             keyboardOffset={keyboardOffset}
           >
-            <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+            <Text style={styles.mutedText}>
               Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
             </Text>
 
@@ -809,49 +700,44 @@ export default function DashboardScreen() {
               clearOnFocus
             />
 
-            {/* Card selector for unexpected */}
-            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Paid with</Text>
-            <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+            <Text style={[styles.label, { marginTop: 10 }]}>Paid with</Text>
+            <View style={styles.chipRow}>
               <Pressable
                 onPress={() => setUxCardId("")}
-                style={{
-                  paddingVertical: 8,
-                  paddingHorizontal: 10,
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  borderColor: uxCardId === "" ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                  backgroundColor: uxCardId === "" ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                }}
+                style={[
+                  styles.selectionChip,
+                  {
+                    borderColor: uxCardId === "" ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                    backgroundColor: uxCardId === "" ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                  }
+                ]}
               >
-                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Cash / Debit</Text>
+                <Text style={styles.textStrong}>Cash / Debit</Text>
               </Pressable>
 
               {(settings.creditCards || []).map((c) => (
                 <Pressable
                   key={c.id}
                   onPress={() => setUxCardId(c.id)}
-                  style={{
-                    paddingVertical: 8,
-                    paddingHorizontal: 10,
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    borderColor: uxCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                    backgroundColor: uxCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                  }}
+                  style={[
+                    styles.selectionChip,
+                    {
+                      borderColor: uxCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                      backgroundColor: uxCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                    }
+                  ]}
                 >
-                  <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>{c.name || "Card"}</Text>
+                  <Text style={styles.textStrong}>{c.name || "Card"}</Text>
                 </Pressable>
               ))}
             </View>
 
-            <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+            <View style={styles.actionRow}>
               <TextBtn
                 label="Add"
                 kind="green"
                 disabled={Number(uxAmount) <= 0}
                 onPress={() => {
-                  // If your usePayflow addUnexpected supports cardId, pass it here.
-                  // @ts-ignore
                   const ok = addUnexpected(uxLabel, uxAmount, uxCardId || undefined);
                   if (!ok) return;
                   setUxLabel("");
@@ -870,11 +756,210 @@ export default function DashboardScreen() {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-      <Text style={{ color: COLORS.muted, ...TYPE.label }}>{label}</Text>
-      <Chip>{value}</Chip>
-    </View>
-  );
-}
+// --- Styles ---
+const styles = StyleSheet.create({
+  fullScreen: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  mainContainer: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    backgroundColor: COLORS.bg,
+  },
+  welcomeContainer: {
+    flex: 1,
+    padding: 16,
+    paddingTop: 10,
+  },
+  
+  // Text Styles
+  textStrong: {
+    color: COLORS.textStrong,
+    fontWeight: "900",
+  },
+  mutedText: {
+    color: COLORS.muted,
+    fontWeight: "700",
+  },
+  label: {
+    color: COLORS.muted,
+    ...TYPE.label,
+  },
+  h1: {
+    color: COLORS.textStrong,
+    ...TYPE.h1,
+  },
+  h2: {
+    color: COLORS.textStrong,
+    ...TYPE.h2,
+  },
+  body: {
+    color: COLORS.muted,
+    ...TYPE.body,
+  },
+  cycleDate: {
+    color: COLORS.muted,
+    marginTop: 4,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  footerText: {
+    color: COLORS.faint,
+    marginTop: 14,
+    textAlign: "center",
+    fontWeight: "700",
+  },
+
+  // Layouts
+  row: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  chipRow: {
+    flexDirection: "row",
+    gap: 10,
+    flexWrap: "wrap",
+    marginTop: 8,
+  },
+  actionRow: {
+    marginTop: 12,
+    flexDirection: "row",
+    gap: 10,
+    flexWrap: "wrap",
+  },
+
+  // Progress Bar
+  progressRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  track: {
+    height: 6,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 999,
+    overflow: "hidden",
+  },
+  fill: {
+    height: "100%",
+    backgroundColor: "#22c55e", // Green color matching your theme
+    borderRadius: 999,
+  },
+
+  // List Items
+  listRow: {
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
+  },
+  listRowContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  listSubtitle: {
+    color: COLORS.muted,
+    marginTop: 3,
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkboxText: {
+    color: COLORS.textStrong,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  
+  // Checklist Category Header
+  catHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginHorizontal: -8,
+    borderRadius: 16,
+  },
+  completedTab: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.40)",
+    backgroundColor: "rgba(34,197,94,0.14)",
+  },
+  completedTabText: {
+    color: COLORS.textStrong,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  listItemBox: {
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.09)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  selectionChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+
+  // Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  modalKeyboardContainer: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  modalContent: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
+    maxHeight: "88%",
+  },
+  modalHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  modalHandle: {
+    alignSelf: "center",
+    width: 44,
+    height: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    marginBottom: 10,
+  },
+  modalTitleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+});
