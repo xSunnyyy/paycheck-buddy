@@ -114,27 +114,56 @@ function ProgressBar({ current, total, pct }: { current: number; total: number; 
 
 function CycleHeader({
   cycleOffset,
-  payday,
+  startDate,
+  endDate,
   onPrev,
   onNext,
   onReset,
 }: {
   cycleOffset: number;
-  payday: string;
+  startDate: string;
+  endDate: string;
   onPrev: () => void;
   onNext: () => void;
   onReset: () => void;
 }) {
-  const daysLeftStr = getDaysRemaining(payday);
-  const isFuture = daysLeftStr !== "Paid";
   const isCurrentCycle = cycleOffset === 0;
-
+  
+  // Calculate text logic
   let mainLabel = "";
-  if (isCurrentCycle && isFuture) mainLabel = daysLeftStr;
-  else if (isCurrentCycle) mainLabel = "Current Cycle";
-  else mainLabel = cycleOffset > 0 ? `Next +${cycleOffset}` : `Prev ${cycleOffset}`;
+  let subLabel = "";
+  let showGreen = false;
 
-  const showGreen = isCurrentCycle && isFuture;
+  if (isCurrentCycle) {
+    // CURRENT: Count down to the END of the cycle
+    const target = new Date(endDate);
+    const now = new Date();
+    target.setHours(0,0,0,0);
+    now.setHours(0,0,0,0);
+    
+    const diffTime = target.getTime() - now.getTime();
+    const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (daysLeft < 0) mainLabel = "Cycle Ended";
+    else if (daysLeft === 0) mainLabel = "Last Day";
+    else if (daysLeft === 1) mainLabel = "1 Day Left";
+    else mainLabel = `${daysLeft} Days Left`;
+    
+    subLabel = `Current Cycle • Ends ${formatDate(new Date(endDate))}`;
+    showGreen = daysLeft >= 0;
+  } else if (cycleOffset > 0) {
+    // FUTURE: Count down to START (Payday)
+    mainLabel = getDaysRemaining(startDate); // e.g. "5 days" or "Tomorrow"
+    if (!mainLabel.includes("days") && !mainLabel.includes("Today") && !mainLabel.includes("Tomorrow")) mainLabel += " away";
+    else if (mainLabel.includes("days")) mainLabel += " away";
+    
+    subLabel = `Payday ${formatDate(new Date(startDate))}`;
+    showGreen = false; // Keep future grey
+  } else {
+    // PAST
+    mainLabel = `Prev ${Math.abs(cycleOffset)}`;
+    subLabel = `Ended ${formatDate(new Date(endDate))}`;
+  }
 
   return (
     <Card>
@@ -151,7 +180,7 @@ function CycleHeader({
             >
               {mainLabel}
             </Text>
-            <Text style={styles.cycleDate}>Payday {formatDate(new Date(payday))}</Text>
+            <Text style={styles.cycleDate}>{subLabel}</Text>
           </View>
 
           <TextBtn label="▶︎" onPress={onNext} />
@@ -329,7 +358,7 @@ export default function DashboardScreen() {
     }
   };
 
-  // --- Auto-Collapse Logic (Stabilized) ---
+  // --- Auto-Collapse Logic ---
   
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
@@ -356,6 +385,7 @@ export default function DashboardScreen() {
 
     const prevMap = prevCatCompleteRef.current;
     const updates: Record<string, boolean> = {};
+    let hasChanges = false;
     
     // 2. Check for changes
     for (const [cat] of grouped) {
@@ -366,17 +396,18 @@ export default function DashboardScreen() {
       // Transition: Incomplete -> Complete (Auto Collapse)
       if (!wasComplete && isComplete) {
          updates[key] = false;
+         hasChanges = true;
       }
 
       // Transition: Complete -> Incomplete (Auto Expand)
       if (wasComplete && !isComplete) {
          updates[key] = true;
+         hasChanges = true;
       }
     }
 
     // 3. Update ONLY if changed
-    if (Object.keys(updates).length > 0) {
-       // ✅ Safe to animate now because we are guarded by the 'updates' check
+    if (hasChanges) {
        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); 
        setCatOpen(prev => ({ ...prev, ...updates }));
     }
@@ -451,7 +482,8 @@ export default function DashboardScreen() {
             {/* Header */}
             <CycleHeader
               cycleOffset={cycleOffset}
-              payday={viewCycle.payday.toISOString()}
+              startDate={viewCycle.payday.toISOString()}
+              endDate={viewCycle.end.toISOString()}
               onPrev={() => setCycleOffset((o) => o - 1)}
               onNext={() => setCycleOffset((o) => o + 1)}
               onReset={() => setCycleOffset(0)}
