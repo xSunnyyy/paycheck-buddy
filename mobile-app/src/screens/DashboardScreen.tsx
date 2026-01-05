@@ -332,7 +332,7 @@ export default function DashboardScreen() {
     }
   };
 
-  // --- Auto-Collapse Logic ---
+  // --- Fixed Auto-Collapse Logic ---
   
   // 1. Calculate which categories are currently complete
   const catComplete = useMemo(() => {
@@ -344,64 +344,57 @@ export default function DashboardScreen() {
     return out;
   }, [grouped, activeChecked]);
 
-  // 2. State for open/close status (Default to ALL open on load)
+  // 2. State for open/close status (Keys missing = Open)
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
 
-  // 3. Track previous complete state to detect CHANGES
-  const prevCatCompleteRef = useRef<Record<string, boolean>>(catComplete);
-  
-  // Initialize 'prev' on first load so we don't trigger "change" animations immediately
+  // 3. Track state to detect CHANGES
+  const prevCatCompleteRef = useRef<Record<string, boolean>>({});
+  const isFirstRun = useRef(true);
+
+  // 4. The Effect
   useEffect(() => {
-      // If prevCatCompleteRef is empty (first run), fill it
-      if (Object.keys(prevCatCompleteRef.current).length === 0 && Object.keys(catComplete).length > 0) {
-          prevCatCompleteRef.current = catComplete;
-      }
-  }, [catComplete]);
-
-  // 4. The Effect: Only collapse when status CHANGES from Incomplete -> Complete
-  useEffect(() => {
-    let shouldAnimate = false;
-
-    setCatOpen((prev) => {
-      const next = { ...prev };
-      const prevMap = prevCatCompleteRef.current;
-      
-      for (const [cat] of grouped) {
-        const key = String(cat);
-        // Default: If undefined, it means "Start Open"
-        if (typeof next[key] !== "boolean") next[key] = true;
-
-        const wasComplete = !!prevMap[key];
-        const isComplete = !!catComplete[key];
-
-        // Transition: Incomplete -> Complete
-        // We only auto-collapse if it WASN'T complete before, and IS complete now.
-        if (!wasComplete && isComplete) {
-           next[key] = false; // Auto collapse
-           shouldAnimate = true;
-        }
-
-        // Transition: Complete -> Incomplete
-        // We auto-expand if the user unchecked something
-        if (wasComplete && !isComplete) {
-           next[key] = true; // Auto expand
-           shouldAnimate = true;
-        }
-      }
-      return next;
-    });
-
-    if (shouldAnimate) {
-       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    // Skip logic on very first mount so everything starts OPEN
+    if (isFirstRun.current) {
+        prevCatCompleteRef.current = catComplete;
+        isFirstRun.current = false;
+        return;
     }
 
-    // Update the ref for the next render cycle
-    prevCatCompleteRef.current = { ...catComplete };
-  }, [catComplete, grouped]); // Dependency on catComplete drives the logic
+    const prevMap = prevCatCompleteRef.current; // Capture OLD state
+    const updates: Record<string, boolean> = {};
+    let hasChanges = false;
+
+    for (const [cat] of grouped) {
+      const key = String(cat);
+      const wasComplete = !!prevMap[key];
+      const isComplete = !!catComplete[key];
+
+      // Transition: Incomplete -> Complete (Auto Collapse)
+      if (!wasComplete && isComplete) {
+         updates[key] = false;
+         hasChanges = true;
+      }
+
+      // Transition: Complete -> Incomplete (Auto Expand)
+      if (wasComplete && !isComplete) {
+         updates[key] = true;
+         hasChanges = true;
+      }
+    }
+
+    if (hasChanges) {
+       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+       setCatOpen(prev => ({ ...prev, ...updates }));
+    }
+
+    // Update ref for next run
+    prevCatCompleteRef.current = catComplete;
+  }, [catComplete, grouped]);
 
   const toggleCategoryOpen = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setCatOpen((prev) => {
+      // If undefined, it defaults to TRUE (Open), so we toggle to FALSE
       const curr = typeof prev[key] === "boolean" ? prev[key] : true;
       return { ...prev, [key]: !curr };
     });
@@ -511,7 +504,8 @@ export default function DashboardScreen() {
                 const label = displayCategory(cat as any);
                 const catKey = String(cat);
                 const isComplete = !!catComplete[catKey];
-                // Logic: If undefined, default to TRUE (Open).
+                
+                // Logic: If key is undefined in catOpen, default to TRUE (Open)
                 const isOpen = typeof catOpen[catKey] === "boolean" ? catOpen[catKey] : true;
 
                 return (
