@@ -1,61 +1,80 @@
-import { StyleSheet, Pressable } from "react-native";
+// app/modal.tsx
+import React from "react";
+import { StyleSheet, Text, View } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { useRouter } from "expo-router";
 
-import { ThemedText } from "@/components/themed-text";
-import { ThemedView } from "@/components/themed-view";
-import { setSetupComplete } from "@/src/storage/setup";
+import { usePayflow } from "@/src/state/PayFlowProvider";
+import { Card, COLORS, TextBtn, TYPE, Divider } from "@/src/ui/common";
 
 export default function ModalScreen() {
   const router = useRouter();
+  const { setHasCompletedSetup, resetEverything } = usePayflow();
 
-  const finishSetup = async () => {
-    // Mark setup as complete
-    await setSetupComplete(true);
-
-    // Replace prevents going back to setup
+  const handleFinishSetup = () => {
+    setHasCompletedSetup(true);
     router.replace("/(tabs)");
   };
 
+  const handleReset = async () => {
+    await resetEverything();
+    router.replace("/settings"); // Go back to setup start
+  };
+
   return (
-    <ThemedView style={styles.container}>
-      <ThemedText type="title">Setup</ThemedText>
+    <View style={styles.container}>
+      {/* Use light status bar for the modal */}
+      <StatusBar style="light" />
 
-      <ThemedText style={styles.subtitle}>
-        Finish setting up PayFlow to continue.
-      </ThemedText>
+      <Card>
+        <Text style={styles.title}>Developer Menu</Text>
+        <Text style={styles.subtitle}>
+          Use this screen to quickly test app states without going through the full flow.
+        </Text>
 
-      {/* Your real setup form can live here */}
-      {/* <SetupForm /> */}
+        <Divider />
 
-      <Pressable onPress={finishSetup} style={styles.button}>
-        <ThemedText type="link" style={styles.buttonText}>
-          Finish Setup
-        </ThemedText>
-      </Pressable>
-    </ThemedView>
+        <View style={{ gap: 12 }}>
+          <TextBtn 
+            label="Force 'Setup Complete' (Jump to Dashboard)" 
+            onPress={handleFinishSetup} 
+            kind="green" 
+          />
+
+          <TextBtn 
+            label="Reset App Data (Clear Cache)" 
+            onPress={handleReset} 
+            kind="red" 
+          />
+          
+          <TextBtn 
+            label="Close Modal" 
+            onPress={() => router.back()} 
+          />
+        </View>
+      </Card>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLORS.bg,
     alignItems: "center",
     justifyContent: "center",
     padding: 20,
   },
-  subtitle: {
-    marginTop: 12,
+  title: {
+    color: COLORS.textStrong,
     textAlign: "center",
-    opacity: 0.8,
+    marginBottom: 8,
+    ...TYPE.h1,
   },
-  button: {
-    marginTop: 24,
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 10,
-    backgroundColor: "#000",
-  },
-  buttonText: {
-    color: "#fff",
+  subtitle: {
+    color: COLORS.muted,
+    textAlign: "center",
+    marginBottom: 16,
+    ...TYPE.body,
   },
 });
