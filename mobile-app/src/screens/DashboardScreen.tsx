@@ -129,13 +129,11 @@ function CycleHeader({
 }) {
   const isCurrentCycle = cycleOffset === 0;
   
-  // Calculate text logic
   let mainLabel = "";
   let subLabel = "";
   let showGreen = false;
 
   if (isCurrentCycle) {
-    // CURRENT: Count down to the END of the cycle
     const target = new Date(endDate);
     const now = new Date();
     target.setHours(0,0,0,0);
@@ -152,15 +150,13 @@ function CycleHeader({
     subLabel = `Current Cycle • Ends ${formatDate(new Date(endDate))}`;
     showGreen = daysLeft >= 0;
   } else if (cycleOffset > 0) {
-    // FUTURE: Count down to START (Payday)
-    mainLabel = getDaysRemaining(startDate); // e.g. "5 days" or "Tomorrow"
+    mainLabel = getDaysRemaining(startDate);
     if (!mainLabel.includes("days") && !mainLabel.includes("Today") && !mainLabel.includes("Tomorrow")) mainLabel += " away";
     else if (mainLabel.includes("days")) mainLabel += " away";
     
     subLabel = `Payday ${formatDate(new Date(startDate))}`;
-    showGreen = false; // Keep future grey
+    showGreen = false;
   } else {
-    // PAST
     mainLabel = `Prev ${Math.abs(cycleOffset)}`;
     subLabel = `Ended ${formatDate(new Date(endDate))}`;
   }
@@ -358,7 +354,7 @@ export default function DashboardScreen() {
     }
   };
 
-  // --- Auto-Collapse Logic ---
+  // --- Auto-Collapse Logic with Debounce (Fixes Glitch) ---
   
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
@@ -371,12 +367,10 @@ export default function DashboardScreen() {
 
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
 
-  // Use refs to track previous state to prevent infinite loops
   const prevCatCompleteRef = useRef<Record<string, boolean>>({});
   const isFirstRun = useRef(true);
 
   useEffect(() => {
-    // 1. Initial Load: Don't animate, just sync
     if (isFirstRun.current) {
         prevCatCompleteRef.current = catComplete;
         isFirstRun.current = false;
@@ -385,34 +379,31 @@ export default function DashboardScreen() {
 
     const prevMap = prevCatCompleteRef.current;
     const updates: Record<string, boolean> = {};
-    let hasChanges = false;
     
-    // 2. Check for changes
     for (const [cat] of grouped) {
       const key = String(cat);
       const wasComplete = !!prevMap[key];
       const isComplete = !!catComplete[key];
 
-      // Transition: Incomplete -> Complete (Auto Collapse)
+      // Incomplete -> Complete (Auto Collapse)
       if (!wasComplete && isComplete) {
          updates[key] = false;
-         hasChanges = true;
       }
-
-      // Transition: Complete -> Incomplete (Auto Expand)
+      // Complete -> Incomplete (Auto Expand)
       if (wasComplete && !isComplete) {
          updates[key] = true;
-         hasChanges = true;
       }
     }
 
-    // 3. Update ONLY if changed
-    if (hasChanges) {
-       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); 
-       setCatOpen(prev => ({ ...prev, ...updates }));
+    // Debounce the animation to allow Balance Text updates to finish first
+    if (Object.keys(updates).length > 0) {
+       const timer = setTimeout(() => {
+         LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); 
+         setCatOpen(prev => ({ ...prev, ...updates }));
+       }, 200); // 200ms delay to prevent glitching with text updates
+       return () => clearTimeout(timer);
     }
 
-    // 4. Save state for next run
     prevCatCompleteRef.current = catComplete;
   }, [catComplete, grouped]);
 
