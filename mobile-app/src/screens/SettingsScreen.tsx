@@ -118,7 +118,7 @@ function DayPicker({
 
       {isOpen && (
         <DateTimePicker
-          value={new Date()} // Date doesn't matter, only day
+          value={new Date()} // Date doesn't matter for day-picking, just day index
           mode="date"
           display={Platform.OS === "ios" ? "spinner" : "default"}
           onChange={(event, selectedDate) => {
@@ -335,9 +335,11 @@ export default function SettingsScreen() {
                         {anchorSelected ? formatDate(anchorDateFromISO(local.anchorISO)) : "Select a payday"}
                       </Text>
                     </Pressable>
+                    
+                    {/* ✅ FIXED: Date Picker initialized with saved date */}
                     {showAnchorPicker && (
                       <DateTimePicker
-                        value={anchorSelected ? anchorDateFromISO(local.anchorISO) : new Date()}
+                        value={anchorSelected ? new Date(local.anchorISO) : new Date()}
                         mode="date"
                         display={Platform.OS === "ios" ? "spinner" : "default"}
                         onChange={(event, selectedDate) => {
@@ -349,6 +351,7 @@ export default function SettingsScreen() {
                         }}
                       />
                     )}
+
                     {Platform.OS === "ios" && showAnchorPicker && (
                       <View style={{ marginTop: 10, alignItems: "flex-start" }}>
                         <TextBtn label="Done" onPress={() => setShowAnchorPicker(false)} kind="green" />
@@ -450,15 +453,15 @@ export default function SettingsScreen() {
                            <Field label="Amount" value={String(m.amount)} onChangeText={s => setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, amount: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
                            
                            <DayPicker 
-                              label="Due Date"
-                              valueDay={m.dueDay || 1}
-                              isOpen={openMonthlyPickerId === m.id}
-                              onToggle={() => setOpenMonthlyPickerId(curr => curr === m.id ? null : m.id)}
-                              onChange={(d) => {
-                                setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, dueDay: d} : x)}));
-                                setMonthlyDueText(map => ({...map, [m.id]: String(d)}));
-                                if (Platform.OS !== "ios") setOpenMonthlyPickerId(null);
-                              }}
+                             label="Due Date"
+                             valueDay={m.dueDay || 1}
+                             isOpen={openMonthlyPickerId === m.id}
+                             onToggle={() => setOpenMonthlyPickerId(curr => curr === m.id ? null : m.id)}
+                             onChange={(d) => {
+                               setLocal(l => ({...l, monthlyItems: l.monthlyItems?.map(x => x.id === m.id ? {...x, dueDay: d} : x)}));
+                               setMonthlyDueText(map => ({...map, [m.id]: String(d)}));
+                               if (Platform.OS !== "ios") setOpenMonthlyPickerId(null);
+                             }}
                            />
                         </EditableItem>
                       ))}
@@ -490,15 +493,15 @@ export default function SettingsScreen() {
                            <Field label="Min Due" value={String(c.minDue)} onChangeText={s => setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, minDue: safeParseNumber(s)} : x)}))} keyboardType="numeric" onFocusScrollToInput={scrollToInput} />
                            
                            <DayPicker 
-                              label="Due Date"
-                              valueDay={c.dueDay || 1}
-                              isOpen={openCardPickerId === c.id}
-                              onToggle={() => setOpenCardPickerId(curr => curr === c.id ? null : c.id)}
-                              onChange={(d) => {
-                                setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, dueDay: d} : x)}));
-                                setCardDueText(map => ({...map, [c.id]: String(d)}));
-                                if (Platform.OS !== "ios") setOpenCardPickerId(null);
-                              }}
+                             label="Due Date"
+                             valueDay={c.dueDay || 1}
+                             isOpen={openCardPickerId === c.id}
+                             onToggle={() => setOpenCardPickerId(curr => curr === c.id ? null : c.id)}
+                             onChange={(d) => {
+                               setLocal(l => ({...l, creditCards: l.creditCards?.map(x => x.id === c.id ? {...x, dueDay: d} : x)}));
+                               setCardDueText(map => ({...map, [c.id]: String(d)}));
+                               if (Platform.OS !== "ios") setOpenCardPickerId(null);
+                             }}
                            />
                         </EditableItem>
                       ))}
