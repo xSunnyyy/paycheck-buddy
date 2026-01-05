@@ -1,3 +1,4 @@
+// src/screens/SettingsScreen.tsx
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -122,7 +123,7 @@ function DayPicker({
 
       {isOpen && (
         <DateTimePicker
-          value={dateForPicker} // <--- This was the fix
+          value={dateForPicker}
           mode="date"
           display={Platform.OS === "ios" ? "spinner" : "default"}
           onChange={(event, selectedDate) => {
@@ -267,12 +268,19 @@ export default function SettingsScreen() {
     if (nextLocal.payAmount < 0) return Alert.alert("Invalid", "Pay amount must be >= 0");
     if (nextLocal.debtRemaining < 0) return Alert.alert("Invalid", "Debt remaining must be >= 0");
     
+    // 1. Update State
     setSettings(nextLocal);
 
     if (mode === "setup") {
+      // 2. Critical Fix: Ensure state saves before navigating
       setHasCompletedSetup(true);
-      requestAnimationFrame(() => router.replace("/(tabs)/index"));
-      Alert.alert("Saved", "Setup complete.");
+      
+      // Add a small delay so AsyncStorage has time to flush
+      setTimeout(() => {
+        router.replace("/(tabs)/index");
+        Alert.alert("Saved", "Setup complete.");
+      }, 500);
+
     } else {
       Alert.alert("Saved", "Settings saved.");
     }
