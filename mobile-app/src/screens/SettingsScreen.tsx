@@ -139,6 +139,9 @@ export default function SettingsScreen() {
   // Calendar picker open card id
   const [openCardPickerId, setOpenCardPickerId] = useState<string | null>(null);
 
+  // ✅ NEW: Calendar picker open monthly item id
+  const [openMonthlyPickerId, setOpenMonthlyPickerId] = useState<string | null>(null);
+
   // ✅ Collapsed by default (as requested)
   const [openTotals, setOpenTotals] = useState(false);
   const [openDistributions, setOpenDistributions] = useState(false);
@@ -705,50 +708,90 @@ export default function SettingsScreen() {
                     <Divider />
 
                     <View style={{ gap: 12 }}>
-                      {(local.monthlyItems || []).map((m) => (
-                        <View
-                          key={m.id}
-                          style={{
-                            borderWidth: 1,
-                            borderColor: COLORS.borderSoft,
-                            borderRadius: 16,
-                            padding: 12,
-                            backgroundColor: "rgba(255,255,255,0.03)",
-                          }}
-                        >
-                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
+                      {(local.monthlyItems || []).map((m) => {
+                        const dueText = monthlyDueText[m.id] ?? "";
+                        const dueDay = dueText ? clamp(safeParseNumber(dueText), 1, 31) : m.dueDay;
 
-                          <Field
-                            label="Name"
-                            value={m.label}
-                            onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
-                            placeholder="Electricity"
-                            onFocusScrollToInput={scrollToInput}
-                          />
+                        return (
+                          <View
+                            key={m.id}
+                            style={{
+                              borderWidth: 1,
+                              borderColor: COLORS.borderSoft,
+                              borderRadius: 16,
+                              padding: 12,
+                              backgroundColor: "rgba(255,255,255,0.03)",
+                            }}
+                          >
+                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>Monthly Expense</Text>
 
-                          <Field
-                            label="Amount"
-                            value={String(m.amount)}
-                            onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            onFocusScrollToInput={scrollToInput}
-                          />
+                            <Field
+                              label="Name"
+                              value={m.label}
+                              onChangeText={(s) => updateMonthlyItem(m.id, { label: s })}
+                              placeholder="Electricity"
+                              onFocusScrollToInput={scrollToInput}
+                            />
 
-                          <Field
-                            label="Due day (1–31)"
-                            value={monthlyDueText[m.id] ?? ""}
-                            onChangeText={(s) => setMonthlyDueText((map) => ({ ...map, [m.id]: keepDigitsOnly(s) }))}
-                            keyboardType="numeric"
-                            placeholder="1"
-                            onFocusScrollToInput={scrollToInput}
-                          />
+                            <Field
+                              label="Amount"
+                              value={String(m.amount)}
+                              onChangeText={(s) => updateMonthlyItem(m.id, { amount: safeParseNumber(s) })}
+                              keyboardType="numeric"
+                              placeholder="0"
+                              onFocusScrollToInput={scrollToInput}
+                            />
 
-                          <View style={{ marginTop: 10, alignItems: "flex-start" }}>
-                            <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
+                            {/* ✅ NEW: calendar dropdown (stores day-of-month only) */}
+                            <Text style={{ color: COLORS.muted, ...TYPE.label, marginTop: 10 }}>Due Date</Text>
+
+                            <Pressable
+                              onPress={() => setOpenMonthlyPickerId(m.id)}
+                              style={{
+                                marginTop: 6,
+                                borderWidth: 1,
+                                borderColor: COLORS.border,
+                                borderRadius: 14,
+                                paddingVertical: 12,
+                                paddingHorizontal: 12,
+                                backgroundColor: "rgba(255,255,255,0.05)",
+                              }}
+                            >
+                              <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                Day {dueDay || 1} of the month
+                              </Text>
+                              <Text style={{ color: COLORS.faint, marginTop: 4, fontWeight: "700" }}>
+                                Tap to pick a date (we only store the day number)
+                              </Text>
+                            </Pressable>
+
+                            {openMonthlyPickerId === m.id ? (
+                              <DateTimePicker
+                                value={new Date()}
+                                mode="date"
+                                display={Platform.OS === "ios" ? "spinner" : "default"}
+                                onChange={(event, selectedDate) => {
+                                  if (Platform.OS !== "ios") setOpenMonthlyPickerId(null);
+                                  if (!selectedDate) return;
+                                  const day = selectedDate.getDate();
+                                  setMonthlyDueText((map) => ({ ...map, [m.id]: String(day) }));
+                                  updateMonthlyItem(m.id, { dueDay: day });
+                                }}
+                              />
+                            ) : null}
+
+                            {Platform.OS === "ios" && openMonthlyPickerId === m.id ? (
+                              <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                                <TextBtn label="Done" onPress={() => setOpenMonthlyPickerId(null)} kind="green" />
+                              </View>
+                            ) : null}
+
+                            <View style={{ marginTop: 10, alignItems: "flex-start" }}>
+                              <TextBtn label="Remove monthly expense" onPress={() => removeMonthlyItem(m.id)} kind="red" />
+                            </View>
                           </View>
-                        </View>
-                      ))}
+                        );
+                      })}
 
                       <TextBtn label="Add monthly expense" onPress={addMonthlyItem} />
                     </View>
