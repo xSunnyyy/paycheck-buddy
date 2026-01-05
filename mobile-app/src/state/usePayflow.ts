@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-// --- Types (Kept exactly as yours) ---
-type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
-type Category = "Credit Cards" | "Monthly" | "Allocations" | "Personal" | "Debt";
+// --- Types ---
+export type PayFrequency = "weekly" | "biweekly" | "twice_monthly" | "monthly";
+export type Category = "Credit Cards" | "Monthly" | "Allocations" | "Personal" | "Debt";
 
 export type CreditCard = {
   id: string;
@@ -59,14 +59,14 @@ export type CardPayment = {
   atISO: string;
 };
 
-type Persisted = {
+type AppState = {
+  loaded: boolean;
   hasCompletedSetup: boolean;
-  settings: any;
+  settings: Settings;
   checkedByCycle: Record<string, CheckedState>;
   appliedItemReductions: Record<string, boolean>;
-  activeCycleId?: string;
-  unexpectedByCycle?: Record<string, UnexpectedExpense[]>;
-  cardPaymentsByCycle?: Record<string, CardPayment[]>;
+  unexpectedByCycle: Record<string, UnexpectedExpense[]>;
+  cardPaymentsByCycle: Record<string, CardPayment[]>;
 };
 
 const STORAGE_KEY = "payflow_mobile_v1";
@@ -86,6 +86,16 @@ export const defaultSettings = (): Settings => ({
   personalSpending: [],
   debtRemaining: 0,
 });
+
+const INITIAL_STATE: AppState = {
+  loaded: false,
+  hasCompletedSetup: false,
+  settings: defaultSettings(),
+  checkedByCycle: {},
+  appliedItemReductions: {},
+  unexpectedByCycle: {},
+  cardPaymentsByCycle: {},
+};
 
 export const safeParseNumber = (s: string) => {
   const n = Number(String(s).replace(/[^0-9.]/g, ""));
@@ -168,14 +178,9 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
     const t = n.getTime();
     const a = anchor.getTime();
     const diff = t - a;
-    
-    // Improved calc to handle past/future correctly
     const idx = Math.floor(diff / msStep);
     
-    // Always find the payday that starts the CURRENT cycle (payday <= now < nextPayday)
-    // If today is payday, we are in this cycle.
     const payday = startOfDay(new Date(a + idx * msStep));
-    
     const start = payday;
     const end = addDays(start, settings.payFrequency === "weekly" ? 6 : 13);
     const id = cycleIdFromDate(settings.payFrequency, payday);
@@ -184,7 +189,6 @@ export const getCurrentCycle = (settings: Settings, now = new Date()): Cycle => 
     return { id, label, start, end, payday };
   }
 
-  // (Keeping monthly logic same as yours, it looked correct)
   if (settings.payFrequency === "twice_monthly") {
     const d1 = clamp(settings.twiceMonthlyDay1 || 1, 1, 28);
     const d2 = clamp(settings.twiceMonthlyDay2 || 15, 1, 28);
@@ -336,13 +340,11 @@ export const groupByCategory = (items: ChecklistItem[]) => {
 function migrateSettings(raw: any): Settings {
   const base = defaultSettings();
   const s: any = { ...base, ...(raw || {}) };
-  // Ensure arrays
   if (!Array.isArray(s.allocations)) s.allocations = [];
   if (!Array.isArray(s.monthlyItems)) s.monthlyItems = [];
   if (!Array.isArray(s.personalSpending)) s.personalSpending = [];
   if (!Array.isArray(s.creditCards)) s.creditCards = [];
 
-  // Migration logic kept same...
   const hasOldBills = Array.isArray(s.bills) && s.bills.length > 0;
   const hasCardsAlready = Array.isArray(s.creditCards) && s.creditCards.length > 0;
   if (!hasCardsAlready && hasOldBills) {
@@ -353,16 +355,17 @@ function migrateSettings(raw: any): Settings {
       balance: Number(b.amount ?? 0) || 0,
       totalDue: Number(b.amount ?? 0) || 0,
       minDue: Number(b.amount ?? 0) || 0,
+      // Fixed: added min argument '1'
       dueDay: clamp(Number(b.dueDay ?? 1) || 1, 1, 31),
     }));
   }
   
-  // Normalization...
   s.monthlyItems = (s.monthlyItems || []).map((m: any) => ({
     id: String(m.id ?? `monthly_${Date.now()}`),
     label: String(m.label ?? ""),
     amount: Number(m.amount ?? 0) || 0,
-    dueDay: clamp(Number(m.dueDay ?? 1) || 1, 31),
+    // Fixed: added min argument '1'
+    dueDay: clamp(Number(m.dueDay ?? 1) || 1, 1, 31),
   }));
 
   s.creditCards = (s.creditCards || []).map((c: any) => {
@@ -374,7 +377,8 @@ function migrateSettings(raw: any): Settings {
       balance: Math.max(0, bal),
       totalDue,
       minDue: Number(c.minDue ?? 0) || 0,
-      dueDay: clamp(Number(c.dueDay ?? 1) || 1, 31),
+      // Fixed: added min argument '1'
+      dueDay: clamp(Number(c.dueDay ?? 1) || 1, 1, 31),
     };
   });
   
@@ -390,28 +394,23 @@ function migrateSettings(raw: any): Settings {
 // --- MAIN HOOK ---
 
 export function usePayflow() {
-  const [loaded, setLoaded] = useState(false);
-  const [hasCompletedSetup, setHasCompletedSetup] = useState(false);
-  const [settings, setSettings] = useState<Settings>(defaultSettings());
-  const [checkedByCycle, setCheckedByCycle] = useState<Record<string, CheckedState>>({});
-  const [appliedItemReductions, setAppliedItemReductions] = useState<Record<string, boolean>>({});
-  const [unexpectedByCycle, setUnexpectedByCycle] = useState<Record<string, UnexpectedExpense[]>>({});
-  const [cardPaymentsByCycle, setCardPaymentsByCycle] = useState<Record<string, CardPayment[]>>({});
+  const [state, setState] = useState<AppState>(INITIAL_STATE);
   const [cycleOffset, setCycleOffset] = useState(0);
 
   const nowRef = useRef(new Date());
   const now = nowRef.current;
-  const viewCycle = useMemo(() => getCycleWithOffset(settings, now, cycleOffset), [settings, cycleOffset, now]);
 
-  const activeChecked = checkedByCycle[viewCycle.id] ?? {};
-  const unexpected = unexpectedByCycle[viewCycle.id] ?? [];
-  const payments = cardPaymentsByCycle[viewCycle.id] ?? [];
+  const viewCycle = useMemo(() => getCycleWithOffset(state.settings, now, cycleOffset), [state.settings, cycleOffset, now]);
+  
+  const activeChecked = state.checkedByCycle[viewCycle.id] ?? {};
+  const unexpected = state.unexpectedByCycle[viewCycle.id] ?? [];
+  const payments = state.cardPaymentsByCycle[viewCycle.id] ?? [];
 
   const unexpectedTotal = useMemo(() => unexpected.reduce((sum, x) => sum + (x.amount || 0), 0), [unexpected]);
   const manualPaymentsTotal = useMemo(() => payments.reduce((sum, p) => sum + (p.amount || 0), 0), [payments]);
-  const items = useMemo(() => buildChecklistForCycle(settings, viewCycle, unexpectedTotal, manualPaymentsTotal), [settings, viewCycle, unexpectedTotal, manualPaymentsTotal]);
+  const items = useMemo(() => buildChecklistForCycle(state.settings, viewCycle, unexpectedTotal, manualPaymentsTotal), [state.settings, viewCycle, unexpectedTotal, manualPaymentsTotal]);
   const grouped = useMemo(() => groupByCategory(items), [items]);
-  const personalSpendingTotal = useMemo(() => (settings.personalSpending || []).reduce((sum, p) => sum + (p.amount || 0), 0), [settings.personalSpending]);
+  const personalSpendingTotal = useMemo(() => (state.settings.personalSpending || []).reduce((sum, p) => sum + (p.amount || 0), 0), [state.settings.personalSpending]);
 
   const totals = useMemo(() => {
     const planned = items.reduce((sum, i) => sum + (i.amount || 0), 0);
@@ -422,193 +421,245 @@ export function usePayflow() {
     return { planned, done, itemsTotal, itemsDone, pct };
   }, [items, activeChecked]);
 
-  // Loader
   const loadFromStorage = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Persisted;
-        setSettings(parsed?.settings ? migrateSettings(parsed.settings) : defaultSettings());
-        setCheckedByCycle(parsed?.checkedByCycle ?? {});
-        setAppliedItemReductions(parsed?.appliedItemReductions ?? {});
-        setUnexpectedByCycle(parsed?.unexpectedByCycle ?? {});
-        setCardPaymentsByCycle(parsed?.cardPaymentsByCycle ?? {});
-        setHasCompletedSetup(!!parsed?.hasCompletedSetup);
+        const parsed = JSON.parse(raw);
+        setState({
+          loaded: true,
+          hasCompletedSetup: !!parsed.hasCompletedSetup,
+          settings: parsed.settings ? migrateSettings(parsed.settings) : defaultSettings(),
+          checkedByCycle: parsed.checkedByCycle ?? {},
+          appliedItemReductions: parsed.appliedItemReductions ?? {},
+          unexpectedByCycle: parsed.unexpectedByCycle ?? {},
+          cardPaymentsByCycle: parsed.cardPaymentsByCycle ?? {},
+        });
       } else {
-        setSettings(defaultSettings());
-        setHasCompletedSetup(false);
+        setState({ ...INITIAL_STATE, loaded: true });
       }
-    } catch { }
+    } catch {
+      setState({ ...INITIAL_STATE, loaded: true });
+    }
   }, []);
 
+  useEffect(() => { loadFromStorage(); }, [loadFromStorage]);
   const reload = useCallback(async () => { await loadFromStorage(); }, [loadFromStorage]);
-  useEffect(() => { (async () => { await loadFromStorage(); setLoaded(true); })(); }, [loadFromStorage]);
 
-  // ✅ IMPROVEMENT: Debounced Save (waits 1000ms after last change)
-  useEffect(() => {
-    if (!loaded) return;
-    
-    const handler = setTimeout(() => {
-      const data: Persisted = {
-        hasCompletedSetup,
-        settings,
-        checkedByCycle,
-        appliedItemReductions,
-        activeCycleId: viewCycle.id,
-        unexpectedByCycle,
-        cardPaymentsByCycle,
-      };
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
-    }, 1000); // Wait 1 second
-
-    return () => clearTimeout(handler);
-  }, [
-    loaded,
-    hasCompletedSetup,
-    settings,
-    checkedByCycle,
-    appliedItemReductions,
-    unexpectedByCycle,
-    cardPaymentsByCycle,
-    viewCycle.id,
-  ]);
-
-  const toggleItem = (id: string) => {
-    setCheckedByCycle((prev) => {
-      const next = { ...prev };
-      const cur = { ...(next[viewCycle.id] ?? {}) };
-      const was = cur[id]?.checked ?? false;
-      cur[id] = { checked: !was, at: !was ? new Date().toISOString() : undefined };
-      next[viewCycle.id] = cur;
+  const updateState = (updater: (prev: AppState) => AppState) => {
+    setState((prev) => {
+      const next = updater(prev);
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
       return next;
     });
   };
 
-  // Reductions logic (unchanged)
+  const setSettings = (arg: Settings | ((prev: Settings) => Settings)) => {
+    updateState(prev => ({
+      ...prev,
+      settings: typeof arg === 'function' ? arg(prev.settings) : arg
+    }));
+  };
+
+  const setHasCompletedSetup = (val: boolean) => {
+    updateState(prev => ({ ...prev, hasCompletedSetup: val }));
+  };
+
+  const toggleItem = (id: string) => {
+    updateState((prev) => {
+      const nextMap = { ...prev.checkedByCycle };
+      const curCycle = { ...(nextMap[viewCycle.id] ?? {}) };
+      const was = curCycle[id]?.checked ?? false;
+      curCycle[id] = { checked: !was, at: !was ? new Date().toISOString() : undefined };
+      nextMap[viewCycle.id] = curCycle;
+      return { ...prev, checkedByCycle: nextMap };
+    });
+  };
+
   useEffect(() => {
-    if (!loaded) return;
-    if (!hasCompletedSetup) return;
+    if (!state.loaded || !state.hasCompletedSetup) return;
+    
+    let pendingSettings = state.settings;
+    let pendingReductions = state.appliedItemReductions;
+    let changed = false;
 
     for (const it of items) {
       const checked = !!activeChecked[it.id]?.checked;
       if (!checked) continue;
 
       const key = `${viewCycle.id}:${it.id}`;
-      const already = !!appliedItemReductions[key];
-      if (already) continue;
+      if (pendingReductions[key]) continue;
 
       if (it.id.startsWith("cc_min_")) {
         const cardId = it.id.replace("cc_min_", "");
-        setSettings((s) => ({
-          ...s,
-          creditCards: (s.creditCards || []).map((c) => {
-            if (c.id !== cardId) return c;
-            const newBal = Math.max(0, (c.balance || 0) - (c.minDue || 0));
-            return { ...c, balance: newBal };
-          }),
-        }));
-      }
-
-      if (it.id === "debt_paydown") {
+        pendingSettings = {
+            ...pendingSettings,
+            creditCards: pendingSettings.creditCards.map(c => 
+                c.id === cardId ? { ...c, balance: Math.max(0, (c.balance || 0) - (c.minDue || 0)) } : c
+            )
+        };
+        changed = true;
+      } else if (it.id === "debt_paydown") {
         const payAmount = it.amount || 0;
-        setSettings((s) => ({
-          ...s,
-          debtRemaining: Math.max(0, (s.debtRemaining || 0) - payAmount),
-        }));
+        pendingSettings = {
+            ...pendingSettings,
+            debtRemaining: Math.max(0, (pendingSettings.debtRemaining || 0) - payAmount)
+        };
+        changed = true;
       }
 
-      setAppliedItemReductions((p) => ({ ...p, [key]: true }));
+      if (changed) {
+        pendingReductions = { ...pendingReductions, [key]: true };
+      }
     }
-  }, [loaded, hasCompletedSetup, items, activeChecked, appliedItemReductions, viewCycle.id]);
+
+    if (changed) {
+       updateState(prev => ({
+           ...prev,
+           settings: pendingSettings,
+           appliedItemReductions: pendingReductions
+       }));
+    }
+  }, [state.loaded, state.hasCompletedSetup, items, activeChecked, state.appliedItemReductions, viewCycle.id]);
 
   const addUnexpected = (label: string, amountText: string, cardId?: string) => {
     const amt = safeParseNumber(amountText);
     if (amt <= 0) return false;
-    const item: UnexpectedExpense = { id: `ux_${Date.now()}`, label: (label || "Unexpected expense").trim(), amount: amt, atISO: new Date().toISOString(), cardId: cardId || undefined };
-    if (cardId) {
-      setSettings((s) => ({ ...s, creditCards: (s.creditCards || []).map((c) => c.id === cardId ? { ...c, balance: (c.balance || 0) + amt } : c) }));
-    }
-    setUnexpectedByCycle((prev) => {
-      const next = { ...prev };
-      const arr = [...(next[viewCycle.id] ?? [])];
-      arr.unshift(item);
-      next[viewCycle.id] = arr;
-      return next;
+
+    const item: UnexpectedExpense = { 
+        id: `ux_${Date.now()}`, 
+        label: (label || "Unexpected expense").trim(), 
+        amount: amt, 
+        atISO: new Date().toISOString(), 
+        cardId: cardId || undefined 
+    };
+
+    updateState((prev) => {
+        const nextUnexpectedMap = { ...prev.unexpectedByCycle };
+        const list = [...(nextUnexpectedMap[viewCycle.id] ?? [])];
+        list.unshift(item);
+        nextUnexpectedMap[viewCycle.id] = list;
+
+        let nextSettings = prev.settings;
+        if (cardId) {
+            nextSettings = {
+                ...nextSettings,
+                creditCards: nextSettings.creditCards.map(c => 
+                    c.id === cardId ? { ...c, balance: (c.balance || 0) + amt } : c
+                )
+            };
+        }
+
+        return { 
+            ...prev, 
+            unexpectedByCycle: nextUnexpectedMap, 
+            settings: nextSettings 
+        };
     });
     return true;
   };
 
   const removeUnexpected = (cycleId: string, id: string) => {
-    setUnexpectedByCycle((prev) => {
-      const list = prev[cycleId] ?? [];
-      const item = list.find((x) => x.id === id);
-      if (!item) return prev;
-      if (item.cardId) {
-        setSettings((s) => ({
-          ...s,
-          creditCards: (s.creditCards || []).map((c) => c.id === item.cardId ? { ...c, balance: Math.max(0, (c.balance || 0) - (item.amount || 0)) } : c),
-        }));
-      }
-      return { ...prev, [cycleId]: list.filter((x) => x.id !== id) };
+    updateState((prev) => {
+        const list = prev.unexpectedByCycle[cycleId] ?? [];
+        const item = list.find((x) => x.id === id);
+        if (!item) return prev;
+
+        let nextSettings = prev.settings;
+        if (item.cardId) {
+            nextSettings = {
+                ...nextSettings,
+                creditCards: nextSettings.creditCards.map(c => 
+                    c.id === item.cardId ? { ...c, balance: Math.max(0, (c.balance || 0) - (item.amount || 0)) } : c
+                )
+            };
+        }
+
+        const nextMap = { ...prev.unexpectedByCycle };
+        nextMap[cycleId] = list.filter((x) => x.id !== id);
+        
+        return {
+            ...prev,
+            unexpectedByCycle: nextMap,
+            settings: nextSettings
+        };
     });
   };
 
   const addCardPayment = (cardId: string, amountText: string) => {
     const amt = safeParseNumber(amountText);
     if (amt <= 0) return false;
-    const card = (settings.creditCards || []).find((c) => c.id === cardId);
+    
+    const card = state.settings.creditCards.find(c => c.id === cardId);
     if (!card) return false;
     if ((card.balance || 0) <= 0) return false;
+
     const actual = Math.min(amt, card.balance || 0);
     const payment: CardPayment = { id: `ccpay_${Date.now()}`, cardId, amount: actual, atISO: new Date().toISOString() };
-    setSettings((s) => ({
-      ...s,
-      creditCards: (s.creditCards || []).map((c) => c.id === cardId ? { ...c, balance: Math.max(0, (c.balance || 0) - actual) } : c),
-    }));
-    setCardPaymentsByCycle((prev) => {
-      const next = { ...prev };
-      const arr = [...(next[viewCycle.id] ?? [])];
-      arr.unshift(payment);
-      next[viewCycle.id] = arr;
-      return next;
+
+    updateState((prev) => {
+        const nextPaymentsMap = { ...prev.cardPaymentsByCycle };
+        const list = [...(nextPaymentsMap[viewCycle.id] ?? [])];
+        list.unshift(payment);
+        nextPaymentsMap[viewCycle.id] = list;
+
+        const nextSettings = {
+            ...prev.settings,
+            creditCards: prev.settings.creditCards.map(c => 
+                c.id === cardId ? { ...c, balance: Math.max(0, (c.balance || 0) - actual) } : c
+            )
+        };
+
+        return {
+            ...prev,
+            cardPaymentsByCycle: nextPaymentsMap,
+            settings: nextSettings
+        };
     });
     return true;
   };
 
   const removeCardPayment = (cycleId: string, paymentId: string) => {
-    setCardPaymentsByCycle((prev) => {
-      const list = prev[cycleId] ?? [];
-      const payment = list.find((p) => p.id === paymentId);
-      if (!payment) return prev;
-      setSettings((s) => ({
-        ...s,
-        creditCards: (s.creditCards || []).map((c) => c.id === payment.cardId ? { ...c, balance: (c.balance || 0) + (payment.amount || 0) } : c),
-      }));
-      return { ...prev, [cycleId]: list.filter((p) => p.id !== paymentId) };
+    updateState(prev => {
+        const list = prev.cardPaymentsByCycle[cycleId] ?? [];
+        const payment = list.find((p) => p.id === paymentId);
+        if (!payment) return prev;
+
+        const nextSettings = {
+            ...prev.settings,
+            creditCards: prev.settings.creditCards.map(c => 
+                c.id === payment.cardId ? { ...c, balance: (c.balance || 0) + (payment.amount || 0) } : c
+            )
+        };
+
+        const nextMap = { ...prev.cardPaymentsByCycle };
+        nextMap[cycleId] = list.filter(p => p.id !== paymentId);
+
+        return {
+            ...prev,
+            cardPaymentsByCycle: nextMap,
+            settings: nextSettings
+        };
     });
   };
 
   const resetEverything = async () => {
-    setSettings(defaultSettings());
-    setCheckedByCycle({});
-    setAppliedItemReductions({});
-    setUnexpectedByCycle({});
-    setCardPaymentsByCycle({});
-    setHasCompletedSetup(false);
+    const resetState = { ...INITIAL_STATE, loaded: true };
+    setState(resetState);
     setCycleOffset(0);
     try { await AsyncStorage.removeItem(STORAGE_KEY); } catch {}
   };
 
-  const last10Cycles = useMemo(() => (hasCompletedSetup ? getLastNCycles(settings, new Date(), 10) : []), [settings, hasCompletedSetup]);
-  const getCycleUnexpectedTotal = (cycleId: string) => (unexpectedByCycle[cycleId] ?? []).reduce((sum, x) => sum + (x.amount || 0), 0);
-  const getCycleChecked = (cycleId: string) => checkedByCycle[cycleId] ?? {};
-  const getCycleCardPayments = (cycleId: string) => cardPaymentsByCycle[cycleId] ?? [];
+  const last10Cycles = useMemo(() => (state.hasCompletedSetup ? getLastNCycles(state.settings, new Date(), 10) : []), [state.settings, state.hasCompletedSetup]);
+  const getCycleUnexpectedTotal = (cycleId: string) => (state.unexpectedByCycle[cycleId] ?? []).reduce((sum, x) => sum + (x.amount || 0), 0);
+  const getCycleChecked = (cycleId: string) => state.checkedByCycle[cycleId] ?? {};
+  const getCycleCardPayments = (cycleId: string) => state.cardPaymentsByCycle[cycleId] ?? [];
 
   return {
-    loaded,
-    hasCompletedSetup,
+    loaded: state.loaded,
+    hasCompletedSetup: state.hasCompletedSetup,
     setHasCompletedSetup,
-    settings,
+    settings: state.settings,
     setSettings,
     reload,
     cycleOffset,

@@ -1,36 +1,52 @@
 // src/screens/DashboardScreen.tsx
-import React, { useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
+  LayoutAnimation,
+  Modal,
   Platform,
+  Pressable,
+  RefreshControl,
   ScrollView,
   StatusBar,
+  StyleSheet,
   Text,
   TextInput,
-  View,
-  Pressable,
-  Modal,
-  findNodeHandle,
-  LayoutAnimation,
   UIManager,
-  StyleSheet,
+  View,
+  findNodeHandle,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useKeyboardHeight } from "@/src/hooks/useKeyboardHeight";
 import { usePayflow } from "@/src/state/PayFlowProvider";
-import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
+import { displayCategory, fmtMoney, formatDate, type CreditCard } from "@/src/state/usePayflow";
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
 
 if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
-// --- Helper Components ---
+/* ---------------- Helpers ---------------- */
 
-// ✅ IMPROVEMENT 1: React.memo
-// This prevents the row from re-rendering if its specific data hasn't changed.
+function getDaysRemaining(targetDate: string | Date) {
+  const target = new Date(targetDate);
+  const now = new Date();
+  target.setHours(0, 0, 0, 0);
+  now.setHours(0, 0, 0, 0);
+
+  const diffTime = target.getTime() - now.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) return "Paid";
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Tomorrow";
+  return `${diffDays} days`;
+}
+
+/* ---------------- Components ---------------- */
+
 const ListRow = React.memo(function ListRow({
   title,
   subtitle,
@@ -49,9 +65,7 @@ const ListRow = React.memo(function ListRow({
       onPress={onPress}
       style={[
         styles.listRow,
-        {
-          backgroundColor: checked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)",
-        },
+        { backgroundColor: checked ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.03)" },
       ]}
     >
       <View style={styles.listRowContent}>
@@ -69,9 +83,7 @@ const ListRow = React.memo(function ListRow({
 
         <View style={{ flex: 1 }}>
           <Text style={styles.textStrong}>{title}</Text>
-          {subtitle ? (
-            <Text style={styles.listSubtitle}>{subtitle}</Text>
-          ) : null}
+          {subtitle ? <Text style={styles.listSubtitle}>{subtitle}</Text> : null}
         </View>
 
         <View style={{ alignItems: "flex-end" }}>
@@ -82,65 +94,72 @@ const ListRow = React.memo(function ListRow({
   );
 });
 
-// ✅ IMPROVEMENT 2: Visual Progress Bar Component
 function ProgressBar({ current, total, pct }: { current: number; total: number; pct: number }) {
   return (
     <View style={{ marginTop: 4 }}>
       <View style={styles.progressRow}>
-        <Text style={[styles.body, { color: COLORS.muted, fontSize: 13 }]}>
-          Progress
-        </Text>
+        <Text style={[styles.body, { color: COLORS.muted, fontSize: 13 }]}>Progress</Text>
         <Text style={[styles.textStrong, { fontSize: 13 }]}>
           {current}/{total} ({pct}%)
         </Text>
       </View>
       <View style={styles.track}>
-        <View style={[styles.fill, { width: `${pct}%` }]} />
+        <View style={[styles.fill, { width: `${Math.min(100, Math.max(0, pct))}%` }]} />
       </View>
     </View>
   );
 }
 
-// ✅ IMPROVEMENT 3: Extracted Cycle Header
-// Keeps the main component cleaner
-function CycleHeader({ 
-  cycleOffset, 
-  payday, 
-  onPrev, 
-  onNext, 
-  onReset 
-}: { 
-  cycleOffset: number; 
-  payday: string; 
-  onPrev: () => void; 
-  onNext: () => void; 
-  onReset: () => void; 
+function CycleHeader({
+  cycleOffset,
+  payday,
+  onPrev,
+  onNext,
+  onReset,
+}: {
+  cycleOffset: number;
+  payday: string;
+  onPrev: () => void;
+  onNext: () => void;
+  onReset: () => void;
 }) {
+  const daysLeftStr = getDaysRemaining(payday);
+  const isFuture = daysLeftStr !== "Paid";
+  const isCurrentCycle = cycleOffset === 0;
+
+  let mainLabel = "";
+  if (isCurrentCycle && isFuture) mainLabel = daysLeftStr;
+  else if (isCurrentCycle) mainLabel = "Current Cycle";
+  else mainLabel = cycleOffset > 0 ? `Next +${cycleOffset}` : `Prev ${cycleOffset}`;
+
+  const showGreen = isCurrentCycle && isFuture;
+
   return (
     <Card>
       <View style={{ gap: 10 }}>
         <View style={styles.row}>
           <TextBtn label="◀︎" onPress={onPrev} />
+          
           <View style={{ alignItems: "center", flex: 1 }}>
-            <Text style={styles.textStrong}>
-              {cycleOffset === 0
-                ? "This paycheck"
-                : cycleOffset > 0
-                ? `Next +${cycleOffset}`
-                : `Prev ${cycleOffset}`}
+            <Text
+              style={[
+                styles.textStrong,
+                showGreen && { color: "#4ade80", textTransform: "uppercase", fontSize: 16, fontWeight: "900" },
+              ]}
+            >
+              {mainLabel}
             </Text>
-            <Text style={styles.cycleDate}>
-              Payday {formatDate(payday)}
-            </Text>
+            <Text style={styles.cycleDate}>Payday {formatDate(new Date(payday))}</Text>
           </View>
+
           <TextBtn label="▶︎" onPress={onNext} />
         </View>
 
-        {cycleOffset !== 0 ? (
+        {cycleOffset !== 0 && (
           <View style={{ marginTop: 10, alignItems: "center" }}>
             <TextBtn label="Back to current" onPress={onReset} kind="green" />
           </View>
-        ) : null}
+        )}
       </View>
     </Card>
   );
@@ -212,7 +231,7 @@ const CompletedTab = () => (
   </View>
 );
 
-// --- Main Screen ---
+/* ---------------- Main Screen ---------------- */
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
@@ -239,6 +258,7 @@ export default function DashboardScreen() {
     manualPaymentsTotal,
     addCardPayment,
     removeCardPayment,
+    reload, 
   } = usePayflow();
 
   const keyboardOffset = Math.max(0, insets.top + 24);
@@ -253,34 +273,62 @@ export default function DashboardScreen() {
     }, 40);
   };
 
-  // UI State
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [uxLabel, setUxLabel] = useState("");
-  const [uxAmount, setUxAmount] = useState("");
-  const [uxCardId, setUxCardId] = useState<string>(""); 
-  const [payCardId, setPayCardId] = useState<string>("");
-  const [payAmount, setPayAmount] = useState("");
+  const [sheetMode, setSheetMode] = useState<"unexpected" | "payment">("unexpected");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [labelInput, setLabelInput] = useState("");
+  const [amountInput, setAmountInput] = useState("");
+  const [selectedCardId, setSelectedCardId] = useState<string>("");
+
   const [paymentsCollapsed, setPaymentsCollapsed] = useState(true);
   const [summaryCollapsed, setSummaryCollapsed] = useState(true);
 
-  // Logic: Cards
   const payableCards: CreditCard[] = useMemo(
     () => (settings.creditCards || []).filter((c) => (c.balance || 0) > 0),
     [settings.creditCards]
   );
-
+  
   const creditCardDebtTotal = useMemo(
     () => (settings.creditCards || []).reduce((sum, c) => sum + (c.balance || 0), 0),
     [settings.creditCards]
   );
 
-  React.useEffect(() => {
-    if (!payCardId && payableCards.length > 0) setPayCardId(payableCards[0].id);
-  }, [payCardId, payableCards]);
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await reload();
+    setRefreshing(false);
+  }, [reload]);
 
-  // Logic: Auto-collapse categories
+  const openSheet = (mode: "unexpected" | "payment") => {
+    setSheetMode(mode);
+    setLabelInput("");
+    setAmountInput("");
+    setSelectedCardId("");
+    if (mode === "payment" && payableCards.length > 0) {
+      setSelectedCardId(payableCards[0].id);
+    }
+    setSheetOpen(true);
+  };
+
+  const handleSubmit = () => {
+    if (Number(amountInput) <= 0) return;
+
+    let success = false;
+    if (sheetMode === "unexpected") {
+      success = addUnexpected(labelInput || "Unexpected", amountInput, selectedCardId || undefined);
+    } else {
+      success = addCardPayment(selectedCardId, amountInput);
+    }
+
+    if (success) {
+      setSheetOpen(false);
+      Keyboard.dismiss();
+    }
+  };
+
+  // ✅ Auto-collapse Logic
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
-  const [catUserOpenedWhileComplete, setCatUserOpenedWhileComplete] = useState<Record<string, boolean>>({});
 
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
@@ -294,55 +342,47 @@ export default function DashboardScreen() {
   const prevCatCompleteRef = useRef<Record<string, boolean>>({});
 
   React.useEffect(() => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    let shouldAnimate = false;
 
     setCatOpen((prev) => {
       const next = { ...prev };
+      const prevMap = prevCatCompleteRef.current || {};
+      
       for (const [cat] of grouped) {
         const key = String(cat);
+        // Default to open if undefined
         if (typeof next[key] !== "boolean") next[key] = true;
-      }
-      const prevMap = prevCatCompleteRef.current || {};
-      for (const [cat] of grouped) {
-        const key = String(cat);
-        const was = !!prevMap[key];
-        const now = !!catComplete[key];
-        const override = !!catUserOpenedWhileComplete[key];
+        
+        const wasComplete = !!prevMap[key];
+        const isComplete = !!catComplete[key];
 
-        if (!was && now && !override) next[key] = false;
-        if (was && !now) next[key] = true;
-        if (now && !override) next[key] = false;
+        // 1. Just became complete? -> Auto-collapse
+        if (!wasComplete && isComplete) {
+           next[key] = false;
+           shouldAnimate = true;
+        }
+
+        // 2. Just became incomplete? -> Auto-expand (Force open)
+        if (wasComplete && !isComplete) {
+           next[key] = true;
+           shouldAnimate = true;
+        }
       }
       return next;
     });
 
-    setCatUserOpenedWhileComplete((prev) => {
-      const next = { ...prev };
-      const prevMap = prevCatCompleteRef.current || {};
-      for (const [cat] of grouped) {
-        const key = String(cat);
-        const was = !!prevMap[key];
-        const now = !!catComplete[key];
-        if (was && !now) next[key] = false;
-      }
-      return next;
-    });
+    if (shouldAnimate) {
+       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    }
 
     prevCatCompleteRef.current = { ...catComplete };
-  }, [grouped, catComplete, catUserOpenedWhileComplete]);
+  }, [grouped, catComplete]);
 
   const toggleCategoryOpen = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setCatOpen((prev) => {
       const curr = typeof prev[key] === "boolean" ? prev[key] : true;
-      const nextOpen = !curr;
-      if (catComplete[key] && nextOpen) {
-        setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: true }));
-      }
-      if (catComplete[key] && !nextOpen) {
-        setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: false }));
-      }
-      return { ...prev, [key]: nextOpen };
+      return { ...prev, [key]: !curr };
     });
   };
 
@@ -397,11 +437,14 @@ export default function DashboardScreen() {
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingTop: 2, paddingBottom: 260 + keyboardHeight }}
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.muted} />
+            }
           >
-            {/* Extracted Cycle Header */}
-            <CycleHeader 
+            {/* Header */}
+            <CycleHeader
               cycleOffset={cycleOffset}
-              payday={viewCycle.payday}
+              payday={viewCycle.payday.toISOString()}
               onPrev={() => setCycleOffset((o) => o - 1)}
               onNext={() => setCycleOffset((o) => o + 1)}
               onReset={() => setCycleOffset(0)}
@@ -416,12 +459,10 @@ export default function DashboardScreen() {
                 </View>
 
                 <Divider />
-
-                {/* VISUAL PROGRESS BAR HERE */}
-                <ProgressBar 
-                  current={totals.itemsDone} 
-                  total={totals.itemsTotal} 
-                  pct={totals.pct} 
+                <ProgressBar
+                  current={totals.itemsDone}
+                  total={totals.itemsTotal}
+                  pct={totals.pct}
                 />
 
                 {!summaryCollapsed && (
@@ -430,9 +471,9 @@ export default function DashboardScreen() {
                     <View style={{ gap: 10 }}>
                       <Row label="Pay amount" value={fmtMoney(settings.payAmount)} />
                       <Row label="Credit Card Debt" value={fmtMoney(creditCardDebtTotal)} />
-                      <Row label="Personal spending (per pay)" value={fmtMoney(personalSpendingTotal)} />
-                      <Row label="Debt remaining (other)" value={fmtMoney(settings.debtRemaining)} />
-                      <Row label="Manual card payments" value={fmtMoney(manualPaymentsTotal)} />
+                      <Row label="Personal spending" value={fmtMoney(personalSpendingTotal)} />
+                      <Row label="Debt remaining" value={fmtMoney(settings.debtRemaining)} />
+                      <Row label="Manual payments" value={fmtMoney(manualPaymentsTotal)} />
                       <Row label="Unexpected" value={fmtMoney(unexpectedTotal)} />
                       <Row label="Planned" value={fmtMoney(totals.planned)} />
                       <Row label="Completed" value={fmtMoney(totals.done)} />
@@ -442,7 +483,7 @@ export default function DashboardScreen() {
               </Card>
             </View>
 
-            {/* Checklist */}
+            {/* Checklist Groups */}
             <View style={{ marginTop: 12, gap: 12 }}>
               {grouped.map(([cat, catItems]) => {
                 const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
@@ -458,7 +499,7 @@ export default function DashboardScreen() {
                         onPress={() => toggleCategoryOpen(catKey)}
                         style={[
                           styles.catHeader,
-                          { backgroundColor: isComplete && !isOpen ? "rgba(34,197,94,0.12)" : "transparent" }
+                          { backgroundColor: isComplete && !isOpen ? "rgba(34,197,94,0.12)" : "transparent" },
                         ]}
                       >
                         <View style={{ flex: 1 }}>
@@ -479,7 +520,6 @@ export default function DashboardScreen() {
                               const state = activeChecked[it.id];
                               const isChecked = !!state?.checked;
                               
-                              // Logic for subtitle
                               const subtitleParts: string[] = [];
                               if (it.notes) subtitleParts.push(it.notes);
                               if (isChecked && state?.at) subtitleParts.push(`checked ${new Date(state.at).toLocaleString()}`);
@@ -512,16 +552,14 @@ export default function DashboardScreen() {
               })}
             </View>
 
-            {/* Credit Card Payments */}
-            {hasCreditCardsCategory ? (
+            {/* Credit Card Payments Section */}
+            {hasCreditCardsCategory && (
               <View style={{ marginTop: 12 }}>
                 <Card>
                   <View style={[styles.row, { gap: 10 }]}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.h2}>Credit Card Payments</Text>
-                      <Text style={[styles.mutedText, { marginTop: 6 }]}>
-                        Extra payments you made.
-                      </Text>
+                      <Text style={[styles.mutedText, { marginTop: 6 }]}>Extra payments log.</Text>
                     </View>
                     <TextBtn label={paymentsCollapsed ? "Show" : "Hide"} onPress={() => setPaymentsCollapsed((v) => !v)} />
                   </View>
@@ -529,63 +567,12 @@ export default function DashboardScreen() {
                   {!paymentsCollapsed && (
                     <>
                       <Divider />
-                      {payableCards.length === 0 ? (
-                        <Text style={styles.mutedText}>No active card balances.</Text>
-                      ) : (
-                        <>
-                          <Text style={styles.label}>Select card</Text>
-                          <View style={styles.chipRow}>
-                            {payableCards.map((c) => (
-                              <Pressable
-                                key={c.id}
-                                onPress={() => setPayCardId(c.id)}
-                                style={[
-                                  styles.selectionChip,
-                                  {
-                                    borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                                    backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                                  }
-                                ]}
-                              >
-                                <Text style={styles.textStrong}>
-                                  {c.name || "Card"} • {fmtMoney(c.balance || 0)}
-                                </Text>
-                              </Pressable>
-                            ))}
-                          </View>
+                      <TextBtn label="+ Log new payment" kind="green" onPress={() => openSheet("payment")} />
 
-                          <Field
-                            label="Amount paid"
-                            value={payAmount}
-                            onChangeText={setPayAmount}
-                            keyboardType="numeric"
-                            placeholder="0"
-                            onFocusScrollToInput={scrollToInput}
-                            clearOnFocus
-                          />
-
-                          <View style={styles.actionRow}>
-                            <TextBtn
-                              label="Add payment"
-                              kind="green"
-                              disabled={!payCardId || Number(payAmount) <= 0}
-                              onPress={() => {
-                                const ok = addCardPayment(payCardId, payAmount);
-                                if (!ok) return;
-                                setPayAmount("");
-                                Keyboard.dismiss();
-                              }}
-                            />
-                            <TextBtn label="Clear" onPress={() => setPayAmount("")} />
-                          </View>
-                        </>
-                      )}
-
-                      {payments.length > 0 && (
+                      {payments.length > 0 ? (
                         <>
                           <Divider />
-                          <Text style={styles.textStrong}>This cycle payments</Text>
-                          <View style={{ marginTop: 10, gap: 10 }}>
+                          <View style={{ gap: 10 }}>
                             {payments.map((p) => {
                               const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
                               return (
@@ -607,14 +594,19 @@ export default function DashboardScreen() {
                             })}
                           </View>
                         </>
+                      ) : (
+                        <>
+                          <Divider />
+                          <Text style={styles.mutedText}>No extra payments logged this cycle.</Text>
+                        </>
                       )}
                     </>
                   )}
                 </Card>
               </View>
-            ) : null}
+            )}
 
-            {/* Unexpected */}
+            {/* Unexpected Section */}
             <View style={{ marginTop: 12 }}>
               <Card>
                 <View style={[styles.row, { gap: 10 }]}>
@@ -624,7 +616,7 @@ export default function DashboardScreen() {
                       Total: <Text style={styles.textStrong}>{fmtMoney(unexpectedTotal)}</Text>
                     </Text>
                   </View>
-                  <TextBtn label="Add" kind="green" onPress={() => setSheetOpen(true)} />
+                  <TextBtn label="Add" kind="green" onPress={() => openSheet("unexpected")} />
                 </View>
 
                 {unexpected.length > 0 ? (
@@ -665,66 +657,75 @@ export default function DashboardScreen() {
             <Text style={styles.footerText}>Offline • Saved on-device</Text>
           </ScrollView>
 
-          {/* Bottom Sheet for Adding Unexpected */}
+          {/* Combined Bottom Sheet for Adding Unexpected OR Payments */}
           <BottomSheet
             visible={sheetOpen}
             onClose={() => {
               setSheetOpen(false);
               Keyboard.dismiss();
             }}
-            title="Add unexpected expense"
+            title={sheetMode === "unexpected" ? "Add unexpected expense" : "Log Card Payment"}
             bottomInset={insets.bottom}
             keyboardHeight={keyboardHeight}
             keyboardOffset={keyboardOffset}
           >
             <Text style={styles.mutedText}>
-              Add a one-off cost for this pay cycle. It reduces what you can pay toward debt automatically.
+              {sheetMode === "unexpected" 
+                ? "Add a one-off cost for this pay cycle."
+                : "Record an extra payment made to a credit card."}
             </Text>
 
-            <Field
-              label="Label"
-              value={uxLabel}
-              onChangeText={setUxLabel}
-              placeholder="Car repair"
-              onFocusScrollToInput={scrollToInput}
-              clearOnFocus
-            />
+            {sheetMode === "unexpected" && (
+              <Field
+                label="Label"
+                value={labelInput}
+                onChangeText={setLabelInput}
+                placeholder="Car repair"
+                onFocusScrollToInput={scrollToInput}
+                clearOnFocus
+              />
+            )}
 
             <Field
               label="Amount"
-              value={uxAmount}
-              onChangeText={setUxAmount}
+              value={amountInput}
+              onChangeText={setAmountInput}
               keyboardType="numeric"
               placeholder="0"
               onFocusScrollToInput={scrollToInput}
               clearOnFocus
             />
 
-            <Text style={[styles.label, { marginTop: 10 }]}>Paid with</Text>
+            <Text style={[styles.label, { marginTop: 10 }]}>
+              {sheetMode === "unexpected" ? "Paid with" : "Select Card"}
+            </Text>
+            
             <View style={styles.chipRow}>
-              <Pressable
-                onPress={() => setUxCardId("")}
-                style={[
-                  styles.selectionChip,
-                  {
-                    borderColor: uxCardId === "" ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                    backgroundColor: uxCardId === "" ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                  }
-                ]}
-              >
-                <Text style={styles.textStrong}>Cash / Debit</Text>
-              </Pressable>
+              {sheetMode === "unexpected" && (
+                <Pressable
+                  onPress={() => setSelectedCardId("")}
+                  style={[
+                    styles.selectionChip,
+                    {
+                      borderColor: selectedCardId === "" ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                      backgroundColor: selectedCardId === "" ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                    },
+                  ]}
+                >
+                  <Text style={styles.textStrong}>Cash / Debit</Text>
+                </Pressable>
+              )}
 
               {(settings.creditCards || []).map((c) => (
                 <Pressable
                   key={c.id}
-                  onPress={() => setUxCardId(c.id)}
+                  onPress={() => setSelectedCardId(c.id)}
                   style={[
                     styles.selectionChip,
                     {
-                      borderColor: uxCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                      backgroundColor: uxCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                    }
+                      borderColor: selectedCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                      backgroundColor: selectedCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                    },
                   ]}
                 >
                   <Text style={styles.textStrong}>{c.name || "Card"}</Text>
@@ -734,18 +735,10 @@ export default function DashboardScreen() {
 
             <View style={styles.actionRow}>
               <TextBtn
-                label="Add"
+                label={sheetMode === "unexpected" ? "Add Expense" : "Log Payment"}
                 kind="green"
-                disabled={Number(uxAmount) <= 0}
-                onPress={() => {
-                  const ok = addUnexpected(uxLabel, uxAmount, uxCardId || undefined);
-                  if (!ok) return;
-                  setUxLabel("");
-                  setUxAmount("");
-                  setUxCardId("");
-                  Keyboard.dismiss();
-                  setSheetOpen(false);
-                }}
+                disabled={Number(amountInput) <= 0 || (sheetMode === "payment" && !selectedCardId)}
+                onPress={handleSubmit}
               />
               <TextBtn label="Cancel" onPress={() => setSheetOpen(false)} />
             </View>
@@ -758,208 +751,50 @@ export default function DashboardScreen() {
 
 // --- Styles ---
 const styles = StyleSheet.create({
-  fullScreen: {
-    flex: 1,
-    backgroundColor: COLORS.bg,
-  },
-  center: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  mainContainer: {
-    flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    backgroundColor: COLORS.bg,
-  },
-  welcomeContainer: {
-    flex: 1,
-    padding: 16,
-    paddingTop: 10,
-  },
+  fullScreen: { flex: 1, backgroundColor: COLORS.bg },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  mainContainer: { flex: 1, paddingHorizontal: 16, paddingTop: 10, backgroundColor: COLORS.bg },
+  welcomeContainer: { flex: 1, padding: 16, paddingTop: 10 },
   
-  // Text Styles
-  textStrong: {
-    color: COLORS.textStrong,
-    fontWeight: "900",
-  },
-  mutedText: {
-    color: COLORS.muted,
-    fontWeight: "700",
-  },
-  label: {
-    color: COLORS.muted,
-    ...TYPE.label,
-  },
-  h1: {
-    color: COLORS.textStrong,
-    ...TYPE.h1,
-  },
-  h2: {
-    color: COLORS.textStrong,
-    ...TYPE.h2,
-  },
-  body: {
-    color: COLORS.muted,
-    ...TYPE.body,
-  },
-  cycleDate: {
-    color: COLORS.muted,
-    marginTop: 4,
-    fontWeight: "700",
-    textAlign: "center",
-  },
-  footerText: {
-    color: COLORS.faint,
-    marginTop: 14,
-    textAlign: "center",
-    fontWeight: "700",
-  },
+  // Text
+  textStrong: { color: COLORS.textStrong, fontWeight: "900" },
+  mutedText: { color: COLORS.muted, fontWeight: "700" },
+  label: { color: COLORS.muted, ...TYPE.label },
+  h1: { color: COLORS.textStrong, ...TYPE.h1 },
+  h2: { color: COLORS.textStrong, ...TYPE.h2 },
+  body: { color: COLORS.muted, ...TYPE.body },
+  cycleDate: { color: COLORS.muted, marginTop: 4, fontWeight: "700", textAlign: "center" },
+  footerText: { color: COLORS.faint, marginTop: 14, textAlign: "center", fontWeight: "700" },
 
   // Layouts
-  row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  chipRow: {
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-    marginTop: 8,
-  },
-  actionRow: {
-    marginTop: 12,
-    flexDirection: "row",
-    gap: 10,
-    flexWrap: "wrap",
-  },
+  row: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  chipRow: { flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 },
+  actionRow: { marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" },
 
   // Progress Bar
-  progressRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 6,
-  },
-  track: {
-    height: 6,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderRadius: 999,
-    overflow: "hidden",
-  },
-  fill: {
-    height: "100%",
-    backgroundColor: "#22c55e", // Green color matching your theme
-    borderRadius: 999,
-  },
+  progressRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
+  track: { height: 6, backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 999, overflow: "hidden" },
+  fill: { height: "100%", backgroundColor: "#22c55e", borderRadius: 999 },
 
   // List Items
-  listRow: {
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.09)",
-  },
-  listRowContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  listSubtitle: {
-    color: COLORS.muted,
-    marginTop: 3,
-    fontWeight: "700",
-    fontSize: 12,
-  },
-  checkbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 999,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  checkboxText: {
-    color: COLORS.textStrong,
-    fontWeight: "900",
-    fontSize: 12,
-  },
+  listRow: { paddingVertical: 12, paddingHorizontal: 12, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.09)" },
+  listRowContent: { flexDirection: "row", alignItems: "center", gap: 10 },
+  listSubtitle: { color: COLORS.muted, marginTop: 3, fontWeight: "700", fontSize: 12 },
+  checkbox: { width: 22, height: 22, borderRadius: 999, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  checkboxText: { color: COLORS.textStrong, fontWeight: "900", fontSize: 12 },
   
-  // Checklist Category Header
-  catHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    marginHorizontal: -8,
-    borderRadius: 16,
-  },
-  completedTab: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "rgba(34,197,94,0.40)",
-    backgroundColor: "rgba(34,197,94,0.14)",
-  },
-  completedTabText: {
-    color: COLORS.textStrong,
-    fontWeight: "900",
-    fontSize: 12,
-  },
-  listItemBox: {
-    padding: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.09)",
-    backgroundColor: "rgba(255,255,255,0.03)",
-  },
-  selectionChip: {
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-  },
+  // Header
+  catHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10, paddingVertical: 6, paddingHorizontal: 8, marginHorizontal: -8, borderRadius: 16 },
+  completedTab: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: "rgba(34,197,94,0.40)", backgroundColor: "rgba(34,197,94,0.14)" },
+  completedTabText: { color: COLORS.textStrong, fontWeight: "900", fontSize: 12 },
+  listItemBox: { padding: 12, borderRadius: 16, borderWidth: 1, borderColor: "rgba(255,255,255,0.09)", backgroundColor: "rgba(255,255,255,0.03)" },
+  selectionChip: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1 },
 
   // Modal
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
-  modalKeyboardContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  modalContent: {
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.bg,
-    maxHeight: "88%",
-  },
-  modalHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  modalHandle: {
-    alignSelf: "center",
-    width: 44,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.18)",
-    marginBottom: 10,
-  },
-  modalTitleRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 10,
-  },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)" },
+  modalKeyboardContainer: { position: "absolute", left: 0, right: 0, bottom: 0 },
+  modalContent: { borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.bg, maxHeight: "88%" },
+  modalHeader: { paddingHorizontal: 16, paddingTop: 12 },
+  modalHandle: { alignSelf: "center", width: 44, height: 5, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.18)", marginBottom: 10 },
+  modalTitleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 },
 });

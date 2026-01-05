@@ -119,7 +119,11 @@ export function Field({
         placeholderTextColor="rgba(185,193,204,0.45)"
         onFocus={() => {
           if (clearOnFocus) onChangeText("");
-          onFocusScrollToInput?.(inputRef);
+          // src/ui/common.tsx line ~122
+if (onFocusScrollToInput) {
+  // Cast to 'any' to fix the strict null check error
+  onFocusScrollToInput(inputRef as any);
+}
         }}
         autoCorrect={false}
         autoCapitalize={autoCapitalize}
