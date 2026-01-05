@@ -12,6 +12,8 @@ import {
   Pressable,
   Modal,
   findNodeHandle,
+  LayoutAnimation,
+  UIManager,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -24,6 +26,10 @@ import { usePayflow } from "@/src/state/PayFlowProvider";
 import { fmtMoney, formatDate, displayCategory, type CreditCard } from "@/src/state/usePayflow";
 
 import { Card, Chip, COLORS, Divider, Field, TextBtn, TYPE } from "@/src/ui/common";
+
+if (Platform.OS === "android" && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 function ListRow({
   title,
@@ -244,80 +250,91 @@ export default function DashboardScreen() {
   // open/closed per category key (defaults to OPEN to preserve your current behavior)
   const [catOpen, setCatOpen] = useState<Record<string, boolean>>({});
 
-  // if a category is complete but user intentionally opened it, we won't auto-close it again
+  // user override: if complete and user expands, don't immediately auto-collapse again
   const [catUserOpenedWhileComplete, setCatUserOpenedWhileComplete] = useState<Record<string, boolean>>({});
 
-  // compute completion per category (derived from activeChecked)
+  // derived completion per category (from checked state)
   const catComplete = useMemo(() => {
     const out: Record<string, boolean> = {};
     for (const [cat, catItems] of grouped) {
       const key = String(cat);
-      const complete =
-        catItems.length > 0 && catItems.every((it) => !!activeChecked[it.id]?.checked);
-      out[key] = complete;
+      out[key] = catItems.length > 0 && catItems.every((it) => !!activeChecked[it.id]?.checked);
     }
     return out;
   }, [grouped, activeChecked]);
 
-  // remember previous completion so we can react on transitions
   const prevCatCompleteRef = useRef<Record<string, boolean>>({});
 
-  // initialize catOpen for any new categories we see, and apply auto-open/close transitions
+  // ensure categories exist + auto-collapse / auto-open transitions
   React.useEffect(() => {
+    // smooth collapse/expand (doesn't change your logic)
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
+    // 1) ensure defaults exist
+    setCatOpen((prev) => {
+      const next = { ...prev };
+      for (const [cat] of grouped) {
+        const key = String(cat);
+        if (typeof next[key] !== "boolean") next[key] = true; // default OPEN
+      }
+      return next;
+    });
+
+    // 2) transitions
+    const prevMap = prevCatCompleteRef.current || {};
+
     setCatOpen((prev) => {
       const next = { ...prev };
 
-      // ensure every category has a value (default open)
       for (const [cat] of grouped) {
         const key = String(cat);
-        if (typeof next[key] !== "boolean") next[key] = true;
-      }
 
-      const prevComplete = prevCatCompleteRef.current || {};
-
-      for (const [cat] of grouped) {
-        const key = String(cat);
-        const was = !!prevComplete[key];
+        const was = !!prevMap[key];
         const now = !!catComplete[key];
-        const userOverride = !!catUserOpenedWhileComplete[key];
+        const override = !!catUserOpenedWhileComplete[key];
 
         // incomplete -> complete: auto-collapse unless user forced open
         if (!was && now) {
-          if (!userOverride) next[key] = false;
+          if (!override) next[key] = false;
         }
 
-        // complete -> incomplete: force open again + clear override (so it stays open)
+        // complete -> incomplete: auto-open and clear override behavior
         if (was && !now) {
           next[key] = true;
         }
+
+        // if currently complete and not overridden, keep collapsed
+        if (now && !override) {
+          next[key] = false;
+        }
       }
 
       return next;
     });
 
-    // clear override when a section becomes incomplete again
     setCatUserOpenedWhileComplete((prev) => {
       const next = { ...prev };
-      const prevComplete = prevCatCompleteRef.current || {};
       for (const [cat] of grouped) {
         const key = String(cat);
-        const was = !!prevComplete[key];
+        const was = !!prevMap[key];
         const now = !!catComplete[key];
-        if (was && !now) next[key] = false;
+        if (was && !now) next[key] = false; // clear override when it becomes incomplete
       }
       return next;
     });
 
-    // update prev map
+    // update prev map AFTER applying transitions
     prevCatCompleteRef.current = { ...catComplete };
   }, [grouped, catComplete, catUserOpenedWhileComplete]);
 
   const toggleCategoryOpen = (key: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+
     setCatOpen((prev) => {
       const curr = typeof prev[key] === "boolean" ? prev[key] : true;
       const nextOpen = !curr;
 
-      // if complete and user opens, mark override so it doesn't auto-collapse immediately
+      // if complete and user opens, mark override so we don't auto-close immediately
       if (catComplete[key] && nextOpen) {
         setCatUserOpenedWhileComplete((m) => ({ ...m, [key]: true }));
       }
@@ -344,6 +361,11 @@ export default function DashboardScreen() {
     >
       <Text style={{ color: COLORS.textStrong, fontWeight: "900", fontSize: 12 }}>Completed</Text>
     </View>
+  );
+
+  const hasCreditCardsCategory = useMemo(
+    () => grouped.some(([cat]) => String(cat) === "Credit Cards"),
+    [grouped]
   );
 
   /* ---------------------------------------------------------------------------------------------- */
@@ -477,7 +499,6 @@ export default function DashboardScreen() {
               {grouped.map(([cat, catItems]) => {
                 const plannedForCat = catItems.reduce((sum, i) => sum + (i.amount || 0), 0);
                 const label = displayCategory(cat as any);
-                const isCreditCards = String(cat) === "Credit Cards";
 
                 const catKey = String(cat);
                 const isComplete = !!catComplete[catKey];
@@ -486,7 +507,7 @@ export default function DashboardScreen() {
                 return (
                   <React.Fragment key={String(cat)}>
                     <Card>
-                      {/* ✅ NEW: press header to collapse/expand + completed green tab */}
+                      {/* ✅ tappable header + completed tab */}
                       <Pressable
                         onPress={() => toggleCategoryOpen(catKey)}
                         style={{
@@ -550,134 +571,140 @@ export default function DashboardScreen() {
                         </>
                       )}
                     </Card>
-
-                    {/* Credit Card Payments under Credit Cards */}
-                    {isCreditCards ? (
-                      <Card>
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 10,
-                          }}
-                        >
-                          <View style={{ flex: 1 }}>
-                            <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
-                            <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
-                              Extra payments you made (reduces remainder + lowers the card balance).
-                            </Text>
-                          </View>
-
-                          <TextBtn label={paymentsCollapsed ? "Show" : "Hide"} onPress={() => setPaymentsCollapsed((v) => !v)} />
-                        </View>
-
-                        {paymentsCollapsed ? null : (
-                          <>
-                            <Divider />
-
-                            {payableCards.length === 0 ? (
-                              <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
-                                No active card balances. Paid-off cards are hidden automatically.
-                              </Text>
-                            ) : (
-                              <>
-                                <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
-
-                                <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
-                                  {payableCards.map((c) => (
-                                    <Pressable
-                                      key={c.id}
-                                      onPress={() => setPayCardId(c.id)}
-                                      style={{
-                                        paddingVertical: 8,
-                                        paddingHorizontal: 10,
-                                        borderRadius: 999,
-                                        borderWidth: 1,
-                                        borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
-                                        backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
-                                      }}
-                                    >
-                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                        {c.name || "Card"} • {fmtMoney(c.balance || 0)}
-                                      </Text>
-                                    </Pressable>
-                                  ))}
-                                </View>
-
-                                <Field
-                                  label="Amount paid"
-                                  value={payAmount}
-                                  onChangeText={setPayAmount}
-                                  keyboardType="numeric"
-                                  placeholder="0"
-                                  onFocusScrollToInput={scrollToInput}
-                                  clearOnFocus
-                                />
-
-                                <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
-                                  <TextBtn
-                                    label="Add payment"
-                                    kind="green"
-                                    disabled={!payCardId || Number(payAmount) <= 0}
-                                    onPress={() => {
-                                      const ok = addCardPayment(payCardId, payAmount);
-                                      if (!ok) return;
-                                      setPayAmount("");
-                                      Keyboard.dismiss();
-                                    }}
-                                  />
-                                  <TextBtn label="Clear" onPress={() => setPayAmount("")} />
-                                </View>
-                              </>
-                            )}
-
-                            {payments.length > 0 ? (
-                              <>
-                                <Divider />
-                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
-                                <View style={{ marginTop: 10, gap: 10 }}>
-                                  {payments.map((p) => {
-                                    const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
-                                    return (
-                                      <View
-                                        key={p.id}
-                                        style={{
-                                          padding: 12,
-                                          borderRadius: 16,
-                                          borderWidth: 1,
-                                          borderColor: "rgba(255,255,255,0.09)",
-                                          backgroundColor: "rgba(255,255,255,0.03)",
-                                        }}
-                                      >
-                                        <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
-                                          <View style={{ flex: 1 }}>
-                                            <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
-                                              {card?.name || "Credit Card"}
-                                            </Text>
-                                            <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
-                                              {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
-                                            </Text>
-                                          </View>
-                                          <View style={{ alignItems: "flex-end", gap: 8 }}>
-                                            <Chip>{fmtMoney(p.amount)}</Chip>
-                                            <TextBtn label="Remove" kind="red" onPress={() => removeCardPayment(viewCycle.id, p.id)} />
-                                          </View>
-                                        </View>
-                                      </View>
-                                    );
-                                  })}
-                                </View>
-                              </>
-                            ) : null}
-                          </>
-                        )}
-                      </Card>
-                    ) : null}
                   </React.Fragment>
                 );
               })}
             </View>
+
+            {/* ✅ MOVED: Credit Card Payments (now near the bottom, above Unexpected) */}
+            {hasCreditCardsCategory ? (
+              <View style={{ marginTop: 12 }}>
+                <Card>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: COLORS.textStrong, ...TYPE.h2 }}>Credit Card Payments</Text>
+                      <Text style={{ color: COLORS.muted, marginTop: 6, fontWeight: "700" }}>
+                        Extra payments you made (reduces remainder + lowers the card balance).
+                      </Text>
+                    </View>
+
+                    <TextBtn label={paymentsCollapsed ? "Show" : "Hide"} onPress={() => setPaymentsCollapsed((v) => !v)} />
+                  </View>
+
+                  {paymentsCollapsed ? null : (
+                    <>
+                      <Divider />
+
+                      {payableCards.length === 0 ? (
+                        <Text style={{ color: COLORS.muted, fontWeight: "700" }}>
+                          No active card balances. Paid-off cards are hidden automatically.
+                        </Text>
+                      ) : (
+                        <>
+                          <Text style={{ color: COLORS.muted, ...TYPE.label }}>Select card</Text>
+
+                          <View style={{ flexDirection: "row", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                            {payableCards.map((c) => (
+                              <Pressable
+                                key={c.id}
+                                onPress={() => setPayCardId(c.id)}
+                                style={{
+                                  paddingVertical: 8,
+                                  paddingHorizontal: 10,
+                                  borderRadius: 999,
+                                  borderWidth: 1,
+                                  borderColor: payCardId === c.id ? "rgba(34,197,94,0.35)" : COLORS.borderSoft,
+                                  backgroundColor: payCardId === c.id ? "rgba(34,197,94,0.14)" : "rgba(255,255,255,0.06)",
+                                }}
+                              >
+                                <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                  {c.name || "Card"} • {fmtMoney(c.balance || 0)}
+                                </Text>
+                              </Pressable>
+                            ))}
+                          </View>
+
+                          <Field
+                            label="Amount paid"
+                            value={payAmount}
+                            onChangeText={setPayAmount}
+                            keyboardType="numeric"
+                            placeholder="0"
+                            onFocusScrollToInput={scrollToInput}
+                            clearOnFocus
+                          />
+
+                          <View style={{ marginTop: 12, flexDirection: "row", gap: 10, flexWrap: "wrap" }}>
+                            <TextBtn
+                              label="Add payment"
+                              kind="green"
+                              disabled={!payCardId || Number(payAmount) <= 0}
+                              onPress={() => {
+                                const ok = addCardPayment(payCardId, payAmount);
+                                if (!ok) return;
+                                setPayAmount("");
+                                Keyboard.dismiss();
+                              }}
+                            />
+                            <TextBtn label="Clear" onPress={() => setPayAmount("")} />
+                          </View>
+                        </>
+                      )}
+
+                      {payments.length > 0 ? (
+                        <>
+                          <Divider />
+                          <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>This cycle payments</Text>
+                          <View style={{ marginTop: 10, gap: 10 }}>
+                            {payments.map((p) => {
+                              const card = (settings.creditCards || []).find((c) => c.id === p.cardId);
+                              return (
+                                <View
+                                  key={p.id}
+                                  style={{
+                                    padding: 12,
+                                    borderRadius: 16,
+                                    borderWidth: 1,
+                                    borderColor: "rgba(255,255,255,0.09)",
+                                    backgroundColor: "rgba(255,255,255,0.03)",
+                                  }}
+                                >
+                                  <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 10 }}>
+                                    <View style={{ flex: 1 }}>
+                                      <Text style={{ color: COLORS.textStrong, fontWeight: "900" }}>
+                                        {card?.name || "Credit Card"}
+                                      </Text>
+                                      <Text style={{ color: COLORS.muted, marginTop: 4, fontWeight: "700" }}>
+                                        {fmtMoney(p.amount)} • {new Date(p.atISO).toLocaleString()}
+                                      </Text>
+                                    </View>
+                                    <View style={{ alignItems: "flex-end", gap: 8 }}>
+                                      <Chip>{fmtMoney(p.amount)}</Chip>
+                                      <TextBtn
+                                        label="Remove"
+                                        kind="red"
+                                        onPress={() => removeCardPayment(viewCycle.id, p.id)}
+                                      />
+                                    </View>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                </Card>
+              </View>
+            ) : null}
 
             {/* Unexpected */}
             <View style={{ marginTop: 12 }}>
@@ -721,7 +748,11 @@ export default function DashboardScreen() {
                               </View>
                               <View style={{ alignItems: "flex-end", gap: 8 }}>
                                 <Chip>{fmtMoney(x.amount)}</Chip>
-                                <TextBtn label="Remove" kind="red" onPress={() => removeUnexpected(viewCycle.id, x.id)} />
+                                <TextBtn
+                                  label="Remove"
+                                  kind="red"
+                                  onPress={() => removeUnexpected(viewCycle.id, x.id)}
+                                />
                               </View>
                             </View>
                           </View>
