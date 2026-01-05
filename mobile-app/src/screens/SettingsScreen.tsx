@@ -1,4 +1,3 @@
-// src/screens/SettingsScreen.tsx
 import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -94,7 +93,7 @@ function SectionHeader({
   );
 }
 
-// Reusable Date/Day Picker for Monthly Items & Cards
+// ✅ FIXED: DayPicker now remembers the selected day
 function DayPicker({ 
   label, 
   valueDay, 
@@ -108,6 +107,11 @@ function DayPicker({
   onToggle: () => void; 
   onChange: (d: number) => void; 
 }) {
+  // Construct a date object that represents the saved "Day" in the current month
+  const dateForPicker = new Date();
+  // If valueDay is 15, this sets the picker to the 15th of current month
+  dateForPicker.setDate(valueDay || 1); 
+
   return (
     <>
       <Text style={styles.label}>{label}</Text>
@@ -118,7 +122,7 @@ function DayPicker({
 
       {isOpen && (
         <DateTimePicker
-          value={new Date()} // Date doesn't matter for day-picking, just day index
+          value={dateForPicker} // <--- This was the fix
           mode="date"
           display={Platform.OS === "ios" ? "spinner" : "default"}
           onChange={(event, selectedDate) => {
@@ -336,7 +340,6 @@ export default function SettingsScreen() {
                       </Text>
                     </Pressable>
                     
-                    {/* ✅ FIXED: Date Picker initialized with saved date */}
                     {showAnchorPicker && (
                       <DateTimePicker
                         value={anchorSelected ? new Date(local.anchorISO) : new Date()}
