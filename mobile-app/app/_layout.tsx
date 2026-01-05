@@ -1,76 +1,62 @@
 // app/_layout.tsx
-import React, { useEffect, useRef } from "react";
-import { ActivityIndicator, View } from "react-native";
+import React, { useEffect } from "react";
+import { ActivityIndicator, View, StyleSheet } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 
 import { PayFlowProvider, usePayflow } from "@/src/state/PayFlowProvider";
 import { COLORS } from "@/src/ui/common";
 
-function Gate() {
+function RootLayoutNav() {
   const router = useRouter();
   const segments = useSegments();
   const { loaded, hasCompletedSetup } = usePayflow();
 
-  const lastRouteKeyRef = useRef<string>("");
-
   useEffect(() => {
     if (!loaded) return;
 
-    const top = segments[0]; // "(tabs)" | "settings" | undefined
-    const inTabs = top === "(tabs)";
-    const inSettings = top === "settings";
+    const inSettings = segments[0] === "settings";
 
-    const key = `${hasCompletedSetup ? "done" : "setup"}:${top ?? "none"}`;
-    if (lastRouteKeyRef.current === key) return;
-
+    // ✅ LOGIC FIX:
+    // Only force redirect if setup is NOT complete.
+    // If setup IS complete, let the user navigate wherever they want (Tabs or Settings).
     if (!hasCompletedSetup && !inSettings) {
-      lastRouteKeyRef.current = key;
       router.replace("/settings");
-      return;
     }
-
-    if (hasCompletedSetup && !inTabs) {
-      lastRouteKeyRef.current = key;
-      router.replace("/(tabs)");
-      return;
-    }
-
-    lastRouteKeyRef.current = key;
-  }, [loaded, hasCompletedSetup, segments, router]);
+  }, [loaded, hasCompletedSetup, segments]);
 
   if (!loaded) {
     return (
-      <View
-        style={{
-          position: "absolute",
-          left: 0,
-          right: 0,
-          top: 0,
-          bottom: 0,
-          backgroundColor: COLORS.bg,
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 999,
-        }}
-      >
-        <ActivityIndicator />
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={COLORS.text} />
       </View>
     );
   }
 
-  return null;
+  return (
+    <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: COLORS.bg } }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="settings" />
+      <Stack.Screen name="modal" options={{ presentation: "modal" }} />
+    </Stack>
+  );
 }
 
 export default function RootLayout() {
   return (
     <PayFlowProvider>
-      <Gate />
-
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="settings" />
-        <Stack.Screen name="modal" options={{ presentation: "modal" }} />
-      </Stack>
+      {/* ✅ Sets white text on status bar globally */}
+      <StatusBar style="light" />
+      <RootLayoutNav />
     </PayFlowProvider>
   );
 }
+
+const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
